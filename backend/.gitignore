@@ -1,0 +1,14 @@
+node_modules/
+hls/
+uploads/
+package-lock.json
+.env
+
+
+git commit -m "feat: video streaming service
+
+- check NVIDIA GPU availiavability (h264_nvenc)
+- quality (144p, 240p, 360, 480p, 720p, 1080p, 1440p)
+- thumnbnails generator
+- multiple audio tracks extraction
+"
