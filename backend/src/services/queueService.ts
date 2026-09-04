@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
-import { generateHLS } from './ffmpegService';
+import { generateHLS } from './ffmpeg';
+import fs from 'fs';
 
 interface QueueItem {
     id: string;
@@ -13,6 +14,13 @@ interface QueueItem {
         thumbnails?: string[];
         error?: string 
     }) => void;
+}
+
+function formatDuration(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
 class ProcessingQueue extends EventEmitter {
@@ -68,18 +76,23 @@ class ProcessingQueue extends EventEmitter {
             this.currentProgress = 100;
             
             const endTime = Date.now();
-            const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
-            const elapsedMinutes = Math.floor(Number(elapsedSeconds) / 60);
-            const remainingSeconds = Math.floor(Number(elapsedSeconds) % 60);
-            const timeStr = elapsedMinutes > 0 
-                ? `${elapsedMinutes}m ${remainingSeconds}s` 
-                : `${elapsedSeconds}s`;
+            const elapsedSeconds = (endTime - startTime) / 1000;
+            const formattedTime = formatDuration(elapsedSeconds);
 
-            console.log(`✅ Job ${item.id} completado en ${timeStr}`);
+            console.log(`✅ Job ${item.id} completado en ${formattedTime}`);
             console.log(`⏱️ Inicio: ${new Date(startTime).toLocaleTimeString()}`);
             console.log(`⏱️ Fin: ${new Date(endTime).toLocaleTimeString()}`);
-            console.log(`📊 Velocidad: ${((item.inputPath ? 'procesado' : ''))}`); 
-            this.emit('job-complete', item, { startTime, endTime, elapsedSeconds });
+
+            try {
+                if (fs.existsSync(item.inputPath)) {
+                    fs.unlinkSync(item.inputPath);
+                    console.log(`🗑️ Archivo original eliminado: ${item.inputPath}`);
+                }
+            } catch (deleteError) {
+                console.warn(`⚠️ No se pudo eliminar el archivo original: ${deleteError}`);
+            }
+
+            this.emit('job-complete', item, { startTime, endTime, elapsedSeconds: formattedTime });
             item.resolve({ 
                 success: true, 
                 outputPath: `${outputPath}/${item.videoId}/index.m3u8`,
@@ -88,8 +101,9 @@ class ProcessingQueue extends EventEmitter {
 
         } catch (error) {
             const endTime = Date.now();
-            const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
-            console.error(` Job ${item.id} falló después de ${elapsedSeconds}s:`, error);
+            const elapsedSeconds = (endTime - startTime) / 1000;
+            const formattedTime = formatDuration(elapsedSeconds);
+            console.error(`❌ Job ${item.id} falló después de ${formattedTime}:`, error);
             this.emit('job-error', item, error);
             item.resolve({ 
                 success: false, 
@@ -116,24 +130,23 @@ class ProcessingQueue extends EventEmitter {
 export const processingQueue = new ProcessingQueue();
 
 processingQueue.on('item-added', (item) => {
-    console.log(`Job añadido a la cola: ${item.id} (Video: ${item.videoId})`);
+    console.log(`📥 Job añadido a la cola: ${item.id} (Video: ${item.videoId})`);
 });
 
 processingQueue.on('job-start', (item) => {
-    console.log(`Procesando job: ${item.id}`);
+    console.log(`⏳ Procesando job: ${item.id}`);
 });
 
 processingQueue.on('job-progress', (item, percent) => {
     if (percent % 10 === 0 || percent === 100) {
-        console.log(`Job ${item.id}: ${percent}%`);
+        console.log(`📊 Job ${item.id}: ${percent}%`);
     }
 });
 
 processingQueue.on('job-complete', (item, timing) => {
-    const elapsed = timing ? (timing.elapsedSeconds / 60).toFixed(1) : '?';
-    console.log(`🎉 Job ${item.id} completado en ${elapsed} minutos`);
+    console.log(`🎉 Job ${item.id} completado en ${timing?.elapsedSeconds || '?'}`);
 });
 
 processingQueue.on('job-error', (item, error) => {
-    console.error(`Job falló: ${item.id}`, error);
+    console.error(`❌ Job falló: ${item.id}`, error);
 });

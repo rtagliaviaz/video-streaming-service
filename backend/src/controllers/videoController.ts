@@ -2,45 +2,63 @@ import { Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { generateHLS, checkGPUAvailability, getVideoInfo } from '../services/ffmpegService';
+import { generateHLS, checkGPUAvailability, getVideoInfo } from '../services/ffmpeg';
 import { processingQueue } from '../services/queueService';
 import { config } from '../config';
+import { VideoMetadataService } from '../services/videoMetadata';
+
+// ✅ Inicializar servicio de metadata
+const metadataService = new VideoMetadataService(config.outputFolder);
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, config.videoFolder);
     },
     filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        cb(null, `${Date.now()}-${file.originalname}`);
+        // ✅ ✅ ✅ Conservar nombre original con timestamp
+        const timestamp = Date.now();
+        const originalName = file.originalname;
+        cb(null, `${timestamp}-${originalName}`);
     },
 });
 
 const upload = multer({ 
     storage,
-    limits: { fileSize: 4 * 1024 * 1024 * 1024 } // 4GB limit
+    limits: { fileSize: 4 * 1024 * 1024 * 1024 }
 });
 
 export const videoController = {
     uploadVideo: upload.single('video'),
 
-    // ✅ GET /api/video/info/:videoId - Obtener info del video procesado
     getVideoInfo: async (req: Request, res: Response) => {
         try {
             const { videoId } = req.params;
-            const videoPath = path.join(config.outputFolder, videoId);
+            const metadata = metadataService.getVideo(videoId);
             
+            if (metadata) {
+                return res.json({
+                    videoId,
+                    audioTracks: metadata.audioTracks || [],
+                    subtitleTracks: metadata.subtitleTracks || [],
+                    duration: metadata.duration || 0,
+                    originalName: metadata.originalName,
+                    size: metadata.size,
+                    qualities: metadata.qualities || [],
+                });
+            }
+
+            // ✅ Fallback: intentar leer del archivo original
+            const videoPath = path.join(config.outputFolder, videoId);
             if (!fs.existsSync(videoPath)) {
                 return res.status(404).json({ error: 'Video not found' });
             }
 
-            // ✅ Buscar el archivo original en uploads
             const uploadsDir = config.videoFolder;
             const files = fs.readdirSync(uploadsDir);
             const originalFile = files.find(f => f.includes(videoId.replace('video_', '')));
             
             if (!originalFile) {
-                return res.json({ audioTracks: [] });
+                return res.json({ audioTracks: [], subtitleTracks: [] });
             }
 
             const inputPath = path.join(uploadsDir, originalFile);
@@ -48,11 +66,10 @@ export const videoController = {
             
             res.json({
                 videoId,
-                audioTracks: info.audioTracks,
-                duration: info.duration,
-                width: info.width,
-                height: info.height,
-                codec: info.codec
+                audioTracks: info.audioTracks || [],
+                subtitleTracks: info.subtitleTracks || [],
+                duration: info.duration || 0,
+                originalName: VideoMetadataService.getOriginalName(originalFile),
             });
         } catch (error) {
             console.error('Get video info error:', error);
@@ -81,13 +98,28 @@ export const videoController = {
 
             const videoId = `video_${Date.now()}`;
             const inputPath = file.path;
-
             const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+            // ✅ ✅ ✅ Guardar metadata inicial
+            const originalName = VideoMetadataService.getOriginalName(file.filename);
+            const stats = fs.statSync(inputPath);
+            
+            metadataService.addOrUpdateVideo({
+                id: videoId,
+                originalName: originalName,
+                createdAt: new Date().toISOString(),
+                duration: 0,
+                size: stats.size,
+                qualities: [],
+                audioTracks: [],
+                subtitleTracks: [],
+            });
 
             res.json({
                 success: true,
                 jobId,
                 videoId,
+                originalName,
                 message: 'Video processing started',
             });
 
@@ -146,46 +178,37 @@ export const videoController = {
         res.json(processingQueue.getStatus());
     },
 
+    // ✅ ✅ ✅ LISTAR VIDEOS CON NOMBRE ORIGINAL
     listVideos: (req: Request, res: Response) => {
-        try {
-            const outputDir = config.outputFolder;
+    try {
+        const videos = metadataService.getAllVideos();
+        
+        const enrichedVideos = videos.map(video => {
+            const videoPath = path.join(config.outputFolder, video.id);
+            const exists = fs.existsSync(videoPath);
+            const qualities = getAvailableQualities(videoPath);
+            const thumbnails = getAvailableThumbnails(videoPath);
             
-            if (!fs.existsSync(outputDir)) {
-                return res.json({ videos: [] });
-            }
+            return {
+                id: video.id,
+                originalName: video.originalName,
+                createdAt: video.createdAt,
+                duration: video.duration,
+                durationFormatted: video.durationFormatted || '00:00:00', // ✅ NUEVO
+                size: video.size,
+                exists,
+                playlist: exists ? `/api/stream/${video.id}` : null,
+                qualities: qualities.length > 0 ? qualities : video.qualities,
+                thumbnails: thumbnails.length > 0 ? thumbnails : null,
+            };
+        });
 
-            const folders = fs.readdirSync(outputDir).filter(f => {
-                const fullPath = path.join(outputDir, f);
-                return fs.statSync(fullPath).isDirectory() && f.startsWith('video_');
-            });
-
-            const videos = folders.map(folder => {
-                const playlistPath = path.join(outputDir, folder, 'index.m3u8');
-                const exists = fs.existsSync(playlistPath);
-                const stats = fs.statSync(path.join(outputDir, folder));
-                
-                const qualities = getAvailableQualities(path.join(outputDir, folder));
-                const thumbnails = getAvailableThumbnails(path.join(outputDir, folder));
-                
-                return {
-                    id: folder,
-                    exists,
-                    playlist: exists ? `/api/stream/${folder}` : null,
-                    createdAt: stats.birthtime || stats.mtime,
-                    qualities,
-                    thumbnails: thumbnails.length > 0 ? thumbnails : null,
-                };
-            });
-
-            videos.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-            res.json({ videos });
-        } catch (error) {
-            console.error('List videos error:', error);
-            res.status(500).json({ error: 'Failed to list videos' });
-        }
-    },
-
+        res.json({ videos: enrichedVideos });
+    } catch (error) {
+        console.error('List videos error:', error);
+        res.status(500).json({ error: 'Failed to list videos' });
+    }
+},
     deleteVideo: async (req: Request, res: Response) => {
         try {
             const { videoId } = req.params;
@@ -197,6 +220,9 @@ export const videoController = {
 
             fs.rmSync(videoPath, { recursive: true, force: true });
             console.log(`🗑️ Deleted video: ${videoId}`);
+
+            // ✅ Eliminar metadata
+            metadataService.deleteVideo(videoId);
 
             const uploadsDir = config.videoFolder;
             const uploadFiles = fs.readdirSync(uploadsDir).filter(f => f.includes(videoId.replace('video_', '')));
@@ -244,6 +270,7 @@ export const videoController = {
     },
 };
 
+// ✅ Helpers
 function getAvailableQualities(videoPath: string): string[] {
     try {
         const files = fs.readdirSync(videoPath);
@@ -270,6 +297,5 @@ function getAvailableThumbnails(videoPath: string): string[] {
 }
 
 function isFileBeingProcessed(filename: string): boolean {
-    const status = processingQueue.getStatus();
     return false;
 }
