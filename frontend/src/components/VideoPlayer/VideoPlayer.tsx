@@ -198,6 +198,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
         videoRef: videoRef as React.RefObject<HTMLVideoElement>,
     });
 
+    // al cambiar videoId, limpiar subtítulos si el nuevo video no tiene
+    useEffect(() => {
+        setSubtitleTracks([]);
+        setCurrentSubtitleTrack(0);
+        setSubtitlesEnabled(false);
+    }, [videoId]);
+
+
+    useEffect(() => {
+        if (fetchedSubtitleTracks && fetchedSubtitleTracks.length > 0) {
+            setSubtitleTracks(fetchedSubtitleTracks);
+            if (fetchedSubtitleTracks.length > 0) setCurrentSubtitleTrack(0);
+        } else {
+            setSubtitleTracks([]);
+            setCurrentSubtitleTrack(0);
+            setSubtitlesEnabled(false);
+        }
+    }, [fetchedSubtitleTracks]);
+
+
     useEffect(() => {
         const video = videoRef.current;
         if (!video || !videoId) return;
