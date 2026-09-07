@@ -10,7 +10,6 @@ interface AudioSelectorProps {
 export const AudioSelector: React.FC<AudioSelectorProps> = ({
     audioTracks,
     currentAudioTrack,
-    onAudioTrackChange,
 }) => {
     if (audioTracks.length <= 1) return null;
 

@@ -73,7 +73,6 @@ export const Controls: React.FC<ControlsProps> = ({
     onToggleFullscreen,
     formatTime,
     isFullscreen,
-    videoRef,
     subtitlesEnabled, 
     onSubtitlesToggle, 
     playbackSpeed,

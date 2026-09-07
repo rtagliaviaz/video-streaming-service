@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { VideoUploader } from './components/VideoUploader';
 import { VideoPlayer } from './components/VideoPlayer';
 import { VideoList } from './components/VideoList';

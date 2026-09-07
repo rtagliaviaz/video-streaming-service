@@ -178,8 +178,7 @@ export const useHLS = ({
                     .catch((err) => console.log('⏸️ Autoplay blocked:', err));
             });
 
-            // EVENT: Audio tracks updated
-            hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (event, data) => {
+            hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => {
                 console.log('🎵 Audio tracks updated:', data);
                 if (data.audioTracks && data.audioTracks.length > 0) {
                     const audioTracks: AudioTrack[] = data.audioTracks.map((track: any, index: number) => ({
@@ -200,7 +199,7 @@ export const useHLS = ({
                 }
             });
 
-            hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (event, data) => {
+            hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
                 console.log('🎵 Audio track switched to:', data.id);
             });
 
