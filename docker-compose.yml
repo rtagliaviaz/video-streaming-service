@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: video-streaming-backend
+    ports:
+      - "3001:3001"
+    volumes:
+      # Persistencia de archivos de video
+      - ./uploads:/app/uploads
+      - ./hls:/app/hls
+      # Opcional: montar .env para variables de entorno en desarrollo
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - VIDEO_FOLDER_PATH=/app/uploads
+      - OUTPUT_FOLDER_PATH=/app/hls
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: video-streaming-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
