@@ -33,6 +33,8 @@ export interface VideoInfo {
     width: number;
     height: number;
     codec: string;
+    fps: number; 
+    gopSize: number; 
 }
 
 export interface GPUInfo {

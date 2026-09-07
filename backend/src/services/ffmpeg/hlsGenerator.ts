@@ -109,7 +109,7 @@ export const generateHLS = async (
             const nvencOpts = encoder === 'h264_nvenc' ? 
                 ` -rc vbr -cq 23 -spatial_aq 1 -temporal_aq 1 -rc-lookahead 32 -no-scenecut 1 -b_ref_mode 0` : '';
 
-            // video without audio
+            // video sin audio
             const commandStr = 
                 `ffmpeg -i "${inputPath}"` +
                 ` -map 0:v:0` +
@@ -119,16 +119,21 @@ export const generateHLS = async (
                 ` -maxrate ${quality.maxrate}` +
                 ` -bufsize ${quality.bufsize}` +
                 ` -vf scale=${quality.resolution}:flags=lanczos` +
+                ` -g ${videoInfo.gopSize}` + 
+                ` -strict_gop 1` +
+                ` -force_key_frames "expr:gte(t,n_forced*2)"` + 
                 nvencOpts +
-                ` -an` + 
+                ` -an` +
                 ` -f hls` +
-                ` -hls_time ${HLS_CONFIG.segmentDuration}` +
+                ` -hls_time 2` +
                 ` -hls_list_size 0` +
                 ` -hls_playlist_type vod` +
                 ` -hls_segment_filename "${segmentPath}"` +
                 ` "${outputFile}"`;
 
             console.log(`  📹 [${qIndex + 1}/${qualities.length}] Procesando ${quality.name}...`);
+
+            console.log('commandSTR', commandStr)
 
             try {
                 let qualityProgress = 0;

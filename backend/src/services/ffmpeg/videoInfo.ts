@@ -9,6 +9,19 @@ function formatDuration(seconds: number): string {
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+function parseFramerate(fpsStr: string): number {
+    console.log('parseFramerate', fpsStr)
+    /*
+    -"24000/1001" = 23.976,
+    -"30000/1001" = 29.97, */
+    if (!fpsStr) return 24;
+    if (fpsStr.includes('/')) {
+        const [num, den] = fpsStr.split('/').map(Number);
+        return num / den;
+    }
+    return parseFloat(fpsStr) || 24;
+}
+
 export const getVideoInfo = async (inputPath: string): Promise<VideoInfo> => {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
@@ -52,17 +65,33 @@ export const getVideoInfo = async (inputPath: string): Promise<VideoInfo> => {
             });
 
             const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+            
+            let fps = 24; 
+            if (videoStream) {
+                if (videoStream.r_frame_rate) {
+                    fps = parseFramerate(videoStream.r_frame_rate);
+                } else if (videoStream.avg_frame_rate) {
+                    fps = parseFramerate(videoStream.avg_frame_rate);
+                }
+            }
+            
+            const gopSize = Math.round(fps * 2); // 2 segundos de GOP
+
             const durationInSeconds = metadata.format.duration || 0;
             const durationFormatted = formatDuration(durationInSeconds);
+
+            console.log(`📽️ Framerate detectado: ${fps.toFixed(2)} fps | GOP: ${gopSize} frames`);
 
             resolve({
                 audioTracks,
                 subtitleTracks,
                 duration: durationInSeconds,
-                durationFormatted, 
+                durationFormatted,
                 width: videoStream?.width || 0,
                 height: videoStream?.height || 0,
-                codec: videoStream?.codec_name || 'unknown'
+                codec: videoStream?.codec_name || 'unknown',
+                fps, 
+                gopSize,
             });
         });
     });
