@@ -7,6 +7,7 @@ import { getVideoInfo } from './videoInfo';
 import { checkGPUAvailability } from './gpuDetector';
 import { generateThumbnails } from './thumbnailGenerator';
 import { generateMasterPlaylist } from './playlistGenerator';
+import { logger } from '../../logger';
 
 function buildFFmpegArgs(
     inputPath: string,
@@ -105,7 +106,7 @@ function runFFmpegWithProgress(
                         onProgress(Math.min(Math.round(totalProgress), 100));
 
                         if (percent % 10 === 0 || percent === 100) {
-                            console.log(`     ${qualityName}: ${percent}% (${Math.round(totalProgress)}% total)`);
+                            logger.info(`[${qualityName}] ${percent}% (${Math.round(totalProgress)}% total)`);
                         }
                     }
                 }
@@ -116,14 +117,19 @@ function runFFmpegWithProgress(
             if (code === 0) {
                 const finalTotal = (qualityIndex + 1) * progressPerQuality;
                 onProgress(Math.min(Math.round(finalTotal), 100));
-                console.log(`     ✅ ${qualityName} completado`);
+                logger.info(`${qualityName} completed`);
                 resolve();
             } else {
+                logger.error({ quality: qualityName, code }, `FFmpeg exited with code ${code} for ${qualityName}`);
                 reject(new Error(`FFmpeg exited with code ${code} for ${qualityName}`));
             }
         });
 
-        proc.on('error', reject);
+        proc.on('error', (err) => {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            logger.error({ quality: qualityName, error: errorMessage }, `FFmpeg error for ${qualityName}`);
+            reject(err);
+        });
     });
 }
 
@@ -136,7 +142,7 @@ async function extractAudioTracks(
 ): Promise<void> {
     if (audioTracks.length === 0) return;
 
-    console.log(`🎵 Generando ${audioTracks.length} playlists de audio separadas...`);
+    logger.info(`Generating ${audioTracks.length} audio playlists...`);
     for (let i = 0; i < audioTracks.length; i++) {
         const audioPlaylist = `audio_${i}.m3u8`;
         const audioOutput = path.join(outputPath, audioPlaylist);
@@ -158,13 +164,20 @@ async function extractAudioTracks(
         await new Promise((resolve, reject) => {
             const proc = spawn('ffmpeg', args, { windowsHide: true });
             proc.on('close', (code) => {
-                if (code === 0) resolve(null);
-                else reject(new Error(`Audio ${i} failed with code ${code}`));
+                if (code === 0) {
+                    logger.info(`Audio ${i + 1} (${audioTracks[i].language || 'track'}) generated`);
+                    resolve(null);
+                } else {
+                    logger.error({ audioIndex: i, code }, `Audio ${i} failed with code ${code}`);
+                    reject(new Error(`Audio ${i} failed with code ${code}`));
+                }
             });
-            proc.on('error', reject);
+            proc.on('error', (err) => {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                logger.error({ audioIndex: i, error: errorMessage }, `Audio ${i} error`);
+                reject(err);
+            });
         });
-
-        console.log(`   ✅ Audio ${i + 1} (${audioTracks[i].language || 'track'}) generado`);
     }
 }
 
@@ -175,7 +188,7 @@ async function extractSubtitles(
 ): Promise<void> {
     if (subtitleTracks.length === 0) return;
 
-    console.log('📝 Generando archivos de subtítulos WebVTT...');
+    logger.info({ trackCount: subtitleTracks.length }, 'Generating WebVTT subtitle files...');
     for (let i = 0; i < subtitleTracks.length; i++) {
         const lang = subtitleTracks[i].language || `sub${i}`;
         const vttFile = `subtitle_${i}.vtt`;
@@ -191,13 +204,20 @@ async function extractSubtitles(
         await new Promise((resolve, reject) => {
             const proc = spawn('ffmpeg', args, { windowsHide: true });
             proc.on('close', (code) => {
-                if (code === 0) resolve(null);
-                else reject(new Error(`Subtitle ${i} failed with code ${code}`));
+                if (code === 0) {
+                    logger.info(`Subtitle ${i + 1} (${lang}) generated`);
+                    resolve(null);
+                } else {
+                    logger.error({ subtitleIndex: i, code }, `Subtitle ${i} failed with code ${code}`);
+                    reject(new Error(`Subtitle ${i} failed with code ${code}`));
+                }
             });
-            proc.on('error', reject);
+            proc.on('error', (err) => {
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                logger.error({ subtitleIndex: i, error: errorMessage }, `Subtitle ${i} error`);
+                reject(err);
+            });
         });
-
-        console.log(`   ✅ Subtítulo ${i + 1} (${lang}) generado`);
     }
 }
 
@@ -209,52 +229,66 @@ export const generateHLS = async (
     qualities: QualityProfile[] = QUALITY_PROFILES
 ): Promise<HLSResult> => {
     const videoInfo = await getVideoInfo(inputPath);
-    console.log(`📊 Video info: ${videoInfo.width}x${videoInfo.height}, ${videoInfo.duration}s`);
-    console.log(`🎵 Pistas de audio encontradas: ${videoInfo.audioTracks.length}`);
+    logger.info(
+        {
+            videoId,
+            audioTracks: videoInfo.audioTracks.length,
+            subtitleTracks: videoInfo.subtitleTracks.length,
+        },
+        `Video info: ${videoInfo.width}x${videoInfo.height}, ${videoInfo.duration}s`
+    );
+
     videoInfo.audioTracks.forEach((track, i) => {
-        console.log(`   Audio ${i + 1}: ${track.language} (${track.codec}, ${track.channels}ch)`);
+        logger.debug(
+            { audioIndex: i, language: track.language, codec: track.codec, channels: track.channels },
+            `Audio ${i + 1}: ${track.language} (${track.codec}, ${track.channels}ch)`
+        );
     });
-    console.log(`📝 Pistas de subtítulos encontradas: ${videoInfo.subtitleTracks.length}`);
     videoInfo.subtitleTracks.forEach((track, i) => {
-        console.log(`   Subtitle ${i + 1}: ${track.language} (${track.codec})`);
+        logger.debug(
+            { subtitleIndex: i, language: track.language, codec: track.codec },
+            `Subtitle ${i + 1}: ${track.language} (${track.codec})`
+        );
     });
 
     const gpuInfo = await checkGPUAvailability();
     const encoder = gpuInfo.hasGPU ? 'h264_nvenc' : 'libx264';
-    console.log(`🎬 Usando encoder: ${encoder}${gpuInfo.hasGPU ? ` (GPU: ${gpuInfo.gpuInfo})` : ' (CPU)'}`);
+    logger.info(`Using encoder: ${encoder}${gpuInfo.hasGPU ? ` (GPU: ${gpuInfo.gpuInfo})` : ' (CPU)'}`);
 
     const isWindows = process.platform === 'win32';
-    console.log(`🖥️ SO: ${process.platform} (${isWindows ? 'Windows' : 'Linux/Docker'})`);
+    logger.info(`OS: ${process.platform} (${isWindows ? 'Windows' : 'Linux/Docker'})`);
 
     return new Promise(async (resolve, reject) => {
         const outputPath = path.join(outputDir, videoId);
         if (!fs.existsSync(outputPath)) {
             fs.mkdirSync(outputPath, { recursive: true });
+            logger.info(`Output directory created: ${outputPath}`);
         }
 
         let thumbnails: string[] = [];
         try {
             thumbnails = await generateThumbnails(inputPath, outputDir, videoId, 10);
-            console.log(`📸 Thumbnails generados: ${thumbnails.length}`);
+            logger.info(`Thumbnails generated: ${thumbnails.length}`);
         } catch (err) {
-            console.warn('⚠️ Error generando thumbnails:', err);
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            logger.warn({ error: errorMessage }, 'Error generating thumbnails');
         }
-
 
         try {
             await extractAudioTracks(inputPath, outputPath, videoInfo.audioTracks, HLS_CONFIG.audioBitrate);
         } catch (err) {
-            console.warn('⚠️ Error extrayendo audio:', err);
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            logger.warn({ error: errorMessage }, 'Error extracting audio');
         }
 
         try {
             await extractSubtitles(inputPath, outputPath, videoInfo.subtitleTracks);
         } catch (err) {
-            console.warn('⚠️ Error extrayendo subtítulos:', err);
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            logger.warn({ error: errorMessage }, 'Error extracting subtitles');
         }
 
-        console.log(`🔧 Procesando ${qualities.length} calidades...`);
-        const totalProgress = 0;
+        logger.info(`Processing ${qualities.length} qualities...`);
         const progressPerQuality = 100 / qualities.length;
         const gopSize = videoInfo.gopSize || 48;
 
@@ -275,7 +309,7 @@ export const generateHLS = async (
                 outputFile
             );
 
-            console.log(`  📹 [${qIndex + 1}/${qualities.length}] Procesando ${quality.name}...`);
+            logger.info(`[${qIndex + 1}/${qualities.length}] Processing ${quality.name}...`);
 
             try {
                 await runFFmpegWithProgress(
@@ -288,13 +322,14 @@ export const generateHLS = async (
                     progressPerQuality
                 );
             } catch (err) {
-                console.error(`❌ Error en calidad ${quality.name}:`, err);
+                const errorMessage = err instanceof Error ? err.message : String(err);
+                logger.error({ quality: quality.name, error: errorMessage }, `Error processing ${quality.name}`);
                 reject(err);
                 return;
             }
         }
 
-        console.log(`✅ HLS generado usando ${encoder} (${qualities.length} calidades)`);
+        logger.info(`HLS generated using ${encoder} (${qualities.length} qualities)`);
 
         generateMasterPlaylist(outputPath, qualities, videoInfo.audioTracks, videoInfo.subtitleTracks);
 

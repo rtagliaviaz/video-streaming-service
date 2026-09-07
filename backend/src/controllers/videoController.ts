@@ -6,6 +6,7 @@ import { generateHLS, checkGPUAvailability, getVideoInfo } from '../services/ffm
 import { processingQueue } from '../services/queueService';
 import { config } from '../config';
 import { VideoMetadataService } from '../services/videoMetadata';
+import { logger } from '../logger';
 
 const metadataService = new VideoMetadataService(config.outputFolder);
 
@@ -69,7 +70,8 @@ export const videoController = {
                 originalName: VideoMetadataService.getOriginalName(originalFile),
             });
         } catch (error) {
-            console.error('Get video info error:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage, videoId: req.params.videoId }, 'Get video info error');
             res.status(500).json({ error: 'Failed to get video info' });
         }
     },
@@ -79,9 +81,11 @@ export const videoController = {
             const gpuInfo = await checkGPUAvailability();
             res.json({
                 ...gpuInfo,
-                message: gpuInfo.hasGPU ? '✅ GPU NVIDIA detectada y disponible' : '💻 Usando CPU (sin GPU)'
+                message: gpuInfo.hasGPU ? 'NVIDIA GPU detected and available' : 'Using CPU (no GPU)'
             });
         } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage }, 'GPU info error');
             res.json({ hasGPU: false, encoder: 'libx264', error: String(error) });
         }
     },
@@ -127,11 +131,13 @@ export const videoController = {
                 inputPath,
                 outputDir: config.outputFolder,
             }).catch((error) => {
-                console.error(`Job ${jobId} failed:`, error);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                logger.error({ jobId, error: errorMessage }, `Job ${jobId} failed`);
             });
 
         } catch (error) {
-            console.error('Process error:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage }, 'Process error');
             if (!res.headersSent) {
                 res.status(500).json({ error: 'Failed to start processing' });
             }
@@ -202,7 +208,8 @@ export const videoController = {
 
             res.json({ videos: enrichedVideos });
         } catch (error) {
-            console.error('List videos error:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage }, 'List videos error');
             res.status(500).json({ error: 'Failed to list videos' });
         }
     },
@@ -217,7 +224,7 @@ export const videoController = {
             }
 
             fs.rmSync(videoPath, { recursive: true, force: true });
-            console.log(`🗑️ Deleted video: ${videoId}`);
+            logger.info(`Deleted video: ${videoId}`);
 
             metadataService.deleteVideo(videoId);
 
@@ -227,13 +234,14 @@ export const videoController = {
                 const filePath = path.join(uploadsDir, file);
                 if (fs.existsSync(filePath)) {
                     fs.unlinkSync(filePath);
-                    console.log(`🗑️ Deleted upload: ${file}`);
+                    logger.info(`Deleted upload: ${file}`);
                 }
             });
 
             res.json({ success: true, message: 'Video deleted successfully' });
         } catch (error) {
-            console.error('Delete video error:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage, videoId: req.params.videoId }, 'Delete video error');
             res.status(500).json({ error: 'Failed to delete video' });
         }
     },
@@ -252,7 +260,7 @@ export const videoController = {
                 if (ageInHours > 24 && !isFileBeingProcessed(file)) {
                     fs.unlinkSync(filePath);
                     deletedCount++;
-                    console.log(`🗑️ Cleaned up temp file: ${file}`);
+                    logger.info(`Cleaned up temp file: ${file}`);
                 }
             });
 
@@ -261,7 +269,8 @@ export const videoController = {
                 message: `Cleaned up ${deletedCount} temporary files` 
             });
         } catch (error) {
-            console.error('Cleanup error:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage }, 'Cleanup error');
             res.status(500).json({ error: 'Failed to cleanup temporary files' });
         }
     },

@@ -1,5 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import { VideoInfo, AudioTrack, SubtitleTrack } from './types';
+import { logger } from '../../logger';
 
 function formatDuration(seconds: number): string {
     if (!seconds || seconds === 0) return '00:00:00';
@@ -10,10 +11,7 @@ function formatDuration(seconds: number): string {
 }
 
 function parseFramerate(fpsStr: string): number {
-    console.log('parseFramerate', fpsStr)
-    /*
-    -"24000/1001" = 23.976,
-    -"30000/1001" = 29.97, */
+    logger.debug({ fpsStr }, 'parseFramerate');
     if (!fpsStr) return 24;
     if (fpsStr.includes('/')) {
         const [num, den] = fpsStr.split('/').map(Number);
@@ -26,6 +24,7 @@ export const getVideoInfo = async (inputPath: string): Promise<VideoInfo> => {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
             if (err) {
+                logger.error({ error: err.message, inputPath }, 'ffprobe error');
                 reject(err);
                 return;
             }
@@ -75,12 +74,15 @@ export const getVideoInfo = async (inputPath: string): Promise<VideoInfo> => {
                 }
             }
             
-            const gopSize = Math.round(fps * 2); // 2 segundos de GOP
+            const gopSize = Math.round(fps * 2);
 
             const durationInSeconds = metadata.format.duration || 0;
             const durationFormatted = formatDuration(durationInSeconds);
 
-            console.log(`📽️ Framerate detectado: ${fps.toFixed(2)} fps | GOP: ${gopSize} frames`);
+            logger.info(
+                { fps: fps.toFixed(2), gopSize },
+                `Framerate: ${fps.toFixed(2)} fps | GOP: ${gopSize} frames`
+            );
 
             resolve({
                 audioTracks,

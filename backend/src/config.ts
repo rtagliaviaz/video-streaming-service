@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import logger from './logger';
 
 dotenv.config();
 
@@ -31,7 +32,7 @@ export const ensureDirectories = () => {
     for (const dir of dirs) {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
-            console.log(`Created directory: ${dir}`);
+            logger.info(`Created directory: ${dir}`);
         }
     }
 

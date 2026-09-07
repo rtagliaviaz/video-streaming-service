@@ -1,6 +1,7 @@
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs';
+import { logger } from '../../logger';
 
 export const generateThumbnails = async (
     inputPath: string,
@@ -16,7 +17,7 @@ export const generateThumbnails = async (
 
         ffmpeg.ffprobe(inputPath, (err, metadata) => {
             if (err) {
-                console.error('Error getting video duration:', err);
+                logger.error({ error: err.message }, 'Error getting video duration for thumbnails');
                 reject(err);
                 return;
             }
@@ -46,11 +47,11 @@ export const generateThumbnails = async (
                 cmd.on('end', () => {
                     completed++;
                     if (completed === commands.length) {
-                        console.log(`✅ Generated ${thumbnails.length} thumbnails for ${videoId}`);
+                        logger.info(`Generated ${thumbnails.length} thumbnails for ${videoId}`);
                         resolve(thumbnails);
                     }
                 }).on('error', (err) => {
-                    console.error(`Error generating thumbnail ${index}:`, err);
+                    logger.warn({ error: err.message, index, videoId }, `Error generating thumbnail ${index}`);
                     completed++;
                     if (completed === commands.length) {
                         resolve(thumbnails);

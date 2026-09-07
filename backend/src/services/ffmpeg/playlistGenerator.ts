@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { QualityProfile, AudioTrack, SubtitleTrack } from './types';
+import { logger } from '../../logger';
 
 export const generateMasterPlaylist = (
     outputPath: string,
@@ -15,7 +16,6 @@ export const generateMasterPlaylist = (
 
 `;
 
-    // add EXT-X-MEDIA for audio if at least 1 track
     if (audioTracks.length > 0) {
         const audioGroupId = 'audio-group';
         audioTracks.forEach((track, index) => {
@@ -51,16 +51,22 @@ export const generateMasterPlaylist = (
         });
         masterPlaylist += `\n`;
     }
+
     const masterPath = path.join(outputPath, 'index.m3u8');
     fs.writeFileSync(masterPath, masterPlaylist);
 
-    console.log(`📋 Master playlist creada con ${sortedQualities.length} calidades`);
-    console.log(`🎵 ${audioTracks.length} pistas de audio disponibles`);
+    logger.info(`Master playlist created with ${sortedQualities.length} qualities, ${audioTracks.length} audio tracks, ${subtitleTracks.length} subtitle tracks`);
+
     audioTracks.forEach((track, i) => {
-        console.log(`   Audio ${i + 1}: ${track.language} (${track.codec})`);
+        logger.debug(
+            { audioIndex: i, language: track.language, codec: track.codec },
+            `Audio ${i + 1}: ${track.language} (${track.codec})`
+        );
     });
-    console.log(`📝 ${subtitleTracks.length} pistas de subtítulos disponibles`);
     subtitleTracks.forEach((track, i) => {
-        console.log(`   Subtitle ${i + 1}: ${track.language} (${track.codec})`);
+        logger.debug(
+            { subtitleIndex: i, language: track.language, codec: track.codec },
+            `Subtitle ${i + 1}: ${track.language} (${track.codec})`
+        );
     });
 };

@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { VideoMetadata, AudioTrack, SubtitleTrack } from './ffmpeg/types';
+import { logger } from '../logger';
 
 const METADATA_FILE = 'videos.json';
 
@@ -18,13 +19,14 @@ export class VideoMetadataService {
             if (fs.existsSync(this.metadataPath)) {
                 const data = fs.readFileSync(this.metadataPath, 'utf-8');
                 this.videos = JSON.parse(data);
-                console.log(`📋 Cargados ${this.videos.length} videos del metadata`);
+                logger.info(`Loaded ${this.videos.length} videos from metadata`);
             } else {
                 this.videos = [];
-                console.log('📋 No hay metadata previa');
+                logger.info('No previous metadata found');
             }
         } catch (error) {
-            console.error('Error loading metadata:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage }, 'Error loading metadata');
             this.videos = [];
         }
     }
@@ -33,7 +35,8 @@ export class VideoMetadataService {
         try {
             fs.writeFileSync(this.metadataPath, JSON.stringify(this.videos, null, 2), 'utf-8');
         } catch (error) {
-            console.error('Error saving metadata:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.error({ error: errorMessage }, 'Error saving metadata');
         }
     }
 
@@ -73,6 +76,3 @@ export class VideoMetadataService {
         return match ? match[1] : fileName;
     }
 }
-
-
-
