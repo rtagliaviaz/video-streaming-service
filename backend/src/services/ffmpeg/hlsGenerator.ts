@@ -70,7 +70,6 @@ function runFFmpegWithProgress(
 ): Promise<void> {
     return new Promise((resolve, reject) => {
         const proc = spawn('ffmpeg', args, {
-            shell: isWindows,
             windowsHide: true,
         });
 
@@ -141,10 +140,23 @@ async function extractAudioTracks(
     for (let i = 0; i < audioTracks.length; i++) {
         const audioPlaylist = `audio_${i}.m3u8`;
         const audioOutput = path.join(outputPath, audioPlaylist);
-        const audioCmd = `ffmpeg -i "${inputPath}" -map 0:a:${i} -c:a aac -b:a ${audioBitrate} -f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename "${path.join(outputPath, `audio_${i}_%03d.ts`)}" "${audioOutput}"`;
+        const segmentTemplate = path.join(outputPath, `audio_${i}_%03d.ts`);
+
+        const args = [
+            '-i', inputPath,
+            '-map', `0:a:${i}`,
+            '-c:a', 'aac',
+            '-b:a', audioBitrate,
+            '-f', 'hls',
+            '-hls_time', '4',
+            '-hls_list_size', '0',
+            '-hls_playlist_type', 'vod',
+            '-hls_segment_filename', segmentTemplate,
+            audioOutput
+        ];
 
         await new Promise((resolve, reject) => {
-            const proc = spawn(audioCmd, { shell: true });
+            const proc = spawn('ffmpeg', args, { windowsHide: true });
             proc.on('close', (code) => {
                 if (code === 0) resolve(null);
                 else reject(new Error(`Audio ${i} failed with code ${code}`));
@@ -168,10 +180,16 @@ async function extractSubtitles(
         const lang = subtitleTracks[i].language || `sub${i}`;
         const vttFile = `subtitle_${i}.vtt`;
         const vttPath = path.join(outputPath, vttFile);
-        const subtitleCmd = `ffmpeg -i "${inputPath}" -map 0:s:${i} -c:s webvtt "${vttPath}"`;
+
+        const args = [
+            '-i', inputPath,
+            '-map', `0:s:${i}`,
+            '-c:s', 'webvtt',
+            vttPath
+        ];
 
         await new Promise((resolve, reject) => {
-            const proc = spawn(subtitleCmd, { shell: true });
+            const proc = spawn('ffmpeg', args, { windowsHide: true });
             proc.on('close', (code) => {
                 if (code === 0) resolve(null);
                 else reject(new Error(`Subtitle ${i} failed with code ${code}`));
@@ -182,7 +200,6 @@ async function extractSubtitles(
         console.log(`   ✅ Subtítulo ${i + 1} (${lang}) generado`);
     }
 }
-
 
 export const generateHLS = async (
     inputPath: string,
