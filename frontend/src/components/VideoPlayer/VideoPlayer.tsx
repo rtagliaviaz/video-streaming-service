@@ -303,7 +303,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
             onToggleFullscreen={toggleFullscreen}
             formatTime={formatTime}
             isFullscreen={isFullscreen}
-            videoRef={videoRef as React.RefObject<HTMLVideoElement>}
             subtitlesEnabled={subtitlesEnabled}
             onSubtitlesToggle={handleSubtitlesToggle}
             playbackSpeed={playbackSpeed}
