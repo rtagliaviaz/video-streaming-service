@@ -10,7 +10,7 @@
 ![GPU Acceleration](https://img.shields.io/badge/GPU-NVENC-76B900?logo=nvidia)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceleration, multi-audio track support, adaptive bitrate streaming, and subtitle extraction.
+A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceleration, multi-audio track support, adaptive bitrate streaming, and subtitle extraction, and sprite sheet thumbnails with seeking preview.
 
 ## Index
 
@@ -36,6 +36,8 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 - **Adaptive Bitrate Streaming** – 7 quality levels (144p to 1440p) with automatic switching
 - **Custom Video Player** – Built with HLS.js, with quality, audio, subtitle, and speed selectors
 - **Real-time Progress** – Server-Sent Events (SSE) for live upload and processing updates
+- **Sprite Sheet Thumbnails** – 40 thumbnails per video (160x90) organized in a sprite sheet with VTT coordinates for smooth seeking preview on the progress bar
+- **Thumbnail Preview on Hover** – When hovering over the progress bar, a thumbnail preview appears showing the exact frame at that position
 - **Thumbnails** – Automatic thumbnail generation for video preview
 - **Bulk Delete** – Select and delete multiple videos at once
 - **Dockerized** – Run the entire stack with a single command
@@ -135,6 +137,7 @@ npm run dev
 | `PORT` | Backend port | `3001` |
 | `VIDEO_FOLDER_PATH` | Upload folder path | `./uploads` |
 | `OUTPUT_FOLDER_PATH` | HLS output folder path | `./hls` |
+| `LOG_LEVEL` | Log level (debug, info, warn, error) | `info` |
 
 ## Docker Volumes
 
@@ -162,11 +165,15 @@ npm run dev
 - Extracts all audio tracks and creates separate HLS playlists
 - Extracts subtitles to WebVTT
 - Generates 7 quality levels (144p to 1440p) with dynamic GOP size (2 seconds)
-- Creates thumbnails
+- Creates 40 thumbnail images (160x90) distributed evenly across the video duration
+- Builds a sprite sheet (8 columns × 5 rows) containing all thumbnails
+- Generates a VTT file with precise coordinates and timestamps for each thumbnail
 
-3. **Streaming** – The HLS playlist is served via Express.
+3. **Thumbnail Preview** – The frontend loads the VTT file and sprite sheet. When the user hovers over the progress bar, the player calculates the corresponding time, looks up the correct tile in the VTT, and displays that portion of the sprite sheet as a preview.
 
-4. **Playback** – The frontend player (HLS.js) streams the video with adaptive bitrate.
+4. **Streaming** – The HLS playlist is served via Express.
+
+5. **Playback** – The frontend player (HLS.js) streams the video with adaptive bitrate, allowing users to switch quality, audio track, subtitles, and playback speed.
 
 ## Project Structure
 
@@ -188,29 +195,18 @@ video-streaming-service/
 │   │   ├── controllers/
 │   │   ├── routes/
 │   │   ├── config.ts
-│   │   └── index.ts
+│   │   ├── index.ts
+│   │   └── logger.ts
 │   ├── Dockerfile
 │   └── package.json
 ├── frontend/
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── VideoPlayer/    
-│   │   │   ├── VideoList/       
-│   │   │   └── VideoUploader/         
+│   │   ├── components/ 
 │   │   ├── hooks/
-│   │   │   ├── useHLS.ts
-│   │   │   ├── useVideoControls.ts
-│   │   │   ├── useKeyboardShortcuts.ts
-│   │   │   ├── useVideoInfo.ts
-│   │   │   ├── useSubtitles.ts
-│   │   │   ├── useFullscreen.ts
-│   │   │   └── useSSE.ts
 │   │   ├── services/
-│   │   │   └── api.ts
 │   │   ├── App.tsx
 │   │   └── main.tsx
 │   ├── Dockerfile
-│   ├── nginx.conf
 │   └── package.json
 ├── docker-compose.yml
 ├── .env
