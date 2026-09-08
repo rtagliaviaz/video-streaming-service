@@ -1,13 +1,16 @@
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
-import { QualityProfile, HLSResult } from './types';
+import pLimit from 'p-limit';
+import { QualityProfile, HLSResult, ProgressInfo } from './types';
 import { QUALITY_PROFILES, HLS_CONFIG } from './config';
 import { getVideoInfo } from './videoInfo';
 import { checkGPUAvailability } from './gpuDetector';
 import { generateThumbnails } from './thumbnailGenerator';
 import { generateMasterPlaylist } from './playlistGenerator';
 import { logger } from '../../logger';
+
+const CONCURRENCY_LIMIT = 3;
 
 function buildFFmpegArgs(
     inputPath: string,
@@ -64,10 +67,7 @@ function runFFmpegWithProgress(
     args: string[],
     isWindows: boolean,
     qualityName: string,
-    onProgress: (percent: number) => void,
-    qualityIndex: number,
-    totalQualities: number,
-    progressPerQuality: number
+    onQualityProgress: (percent: number) => void
 ): Promise<void> {
     return new Promise((resolve, reject) => {
         const proc = spawn('ffmpeg', args, {
@@ -100,13 +100,9 @@ function runFFmpegWithProgress(
                     const percent = Math.round((currentTime / duration) * 100);
                     if (percent > lastPercent) {
                         lastPercent = percent;
-
-                        const qualityContribution = (percent / 100) * progressPerQuality;
-                        const totalProgress = (qualityIndex * progressPerQuality) + qualityContribution;
-                        onProgress(Math.min(Math.round(totalProgress), 100));
-
+                        onQualityProgress(percent);
                         if (percent % 10 === 0 || percent === 100) {
-                            logger.info(`[${qualityName}] ${percent}% (${Math.round(totalProgress)}% total)`);
+                            logger.info(`[${qualityName}] ${percent}%`);
                         }
                     }
                 }
@@ -115,8 +111,7 @@ function runFFmpegWithProgress(
 
         proc.on('close', (code) => {
             if (code === 0) {
-                const finalTotal = (qualityIndex + 1) * progressPerQuality;
-                onProgress(Math.min(Math.round(finalTotal), 100));
+                onQualityProgress(100);
                 logger.info(`${qualityName} completed`);
                 resolve();
             } else {
@@ -224,7 +219,7 @@ export const generateHLS = async (
     inputPath: string,
     outputDir: string,
     videoId: string,
-    onProgress: (percent: number) => void,
+    onProgress: (info: ProgressInfo) => void,
     qualities: QualityProfile[] = QUALITY_PROFILES
 ): Promise<HLSResult> => {
     const videoInfo = await getVideoInfo(inputPath);
@@ -264,9 +259,23 @@ export const generateHLS = async (
             logger.info(`Output directory created: ${outputPath}`);
         }
 
+        const emitProgress = (stage: ProgressInfo['stage'], percent: number, details?: ProgressInfo['details']) => {
+            onProgress({
+                percent: Math.min(100, Math.round(percent)),
+                stage,
+                details: details || {},
+            });
+        };
+
         let thumbResult = { thumbnails: [] as string[], sprite: '', vtt: '' };
         try {
+            emitProgress('thumbnails', 2);
             thumbResult = await generateThumbnails(inputPath, outputDir, videoId, 40);
+            emitProgress('thumbnails', 10, {
+                thumbnailsGenerated: thumbResult.thumbnails.length,
+                totalThumbnails: 40,
+                spriteGenerated: !!thumbResult.sprite,
+            });
             logger.info(`Thumbnails generated: ${thumbResult.thumbnails.length} individual, sprite: ${thumbResult.sprite}, vtt: ${thumbResult.vtt}`);
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
@@ -274,25 +283,58 @@ export const generateHLS = async (
         }
 
         try {
+            emitProgress('audio', 12);
             await extractAudioTracks(inputPath, outputPath, videoInfo.audioTracks, HLS_CONFIG.audioBitrate);
+            emitProgress('audio', 15, {
+                audioTracksExtracted: videoInfo.audioTracks.length,
+                totalAudioTracks: videoInfo.audioTracks.length,
+            });
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.warn({ error: errorMessage }, 'Error extracting audio');
         }
 
         try {
+            emitProgress('subtitles', 17);
             await extractSubtitles(inputPath, outputPath, videoInfo.subtitleTracks);
+            emitProgress('subtitles', 20, {
+                subtitlesExtracted: videoInfo.subtitleTracks.length,
+                totalSubtitles: videoInfo.subtitleTracks.length,
+            });
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.warn({ error: errorMessage }, 'Error extracting subtitles');
         }
 
-        logger.info(`Processing ${qualities.length} qualities...`);
-        const progressPerQuality = 100 / qualities.length;
+        logger.info(`Processing ${qualities.length} qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
         const gopSize = videoInfo.gopSize || 48;
 
-        for (let qIndex = 0; qIndex < qualities.length; qIndex++) {
+        const qualityProgress = new Array(qualities.length).fill(0);
+        const qualitiesStatus: { name: string; status: 'pending' | 'processing' | 'completed' | 'failed' }[] = 
+            qualities.map(q => ({
+                name: q.name,
+                status: 'pending' as const,
+            }));
+
+        const updateTotalProgress = () => {
+            const total = qualityProgress.reduce((sum, p) => sum + p, 0) / qualities.length;
+            const percent = 20 + (total / 100) * 80;
+            const rounded = Math.min(Math.round(percent), 100);
+            const completed = qualitiesStatus.filter(q => q.status === 'completed').length;
+            const current = qualitiesStatus.find(q => q.status === 'processing');
+            emitProgress('qualities', rounded, {
+                completedQualities: completed,
+                totalQualities: qualities.length,
+                currentQuality: current?.name,
+                qualitiesStatus: [...qualitiesStatus],
+            });
+        };
+
+        const processQuality = async (qIndex: number): Promise<void> => {
             const quality = qualities[qIndex];
+            qualitiesStatus[qIndex].status = 'processing';
+            updateTotalProgress();
+
             const segmentName = `segment_${quality.name}_%03d.ts`;
             const playlistName = `playlist_${quality.name}.m3u8`;
             const outputFile = path.join(outputPath, playlistName);
@@ -310,22 +352,37 @@ export const generateHLS = async (
 
             logger.info(`[${qIndex + 1}/${qualities.length}] Processing ${quality.name}...`);
 
+            const onQualityProgress = (percent: number) => {
+                qualityProgress[qIndex] = percent;
+                updateTotalProgress();
+            };
+
             try {
-                await runFFmpegWithProgress(
-                    args,
-                    isWindows,
-                    quality.name,
-                    onProgress,
-                    qIndex,
-                    qualities.length,
-                    progressPerQuality
-                );
+                await runFFmpegWithProgress(args, isWindows, quality.name, onQualityProgress);
+                qualitiesStatus[qIndex].status = 'completed';
+                qualityProgress[qIndex] = 100;
+                updateTotalProgress();
             } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : String(err);
-                logger.error({ quality: quality.name, error: errorMessage }, `Error processing ${quality.name}`);
-                reject(err);
-                return;
+                qualitiesStatus[qIndex].status = 'failed';
+                throw err;
             }
+        };
+
+        const limit = pLimit(CONCURRENCY_LIMIT);
+        const tasks = qualities.map((_, index) => limit(() => processQuality(index)));
+
+        try {
+            await Promise.all(tasks);
+            emitProgress('done', 100, {
+                completedQualities: qualities.length,
+                totalQualities: qualities.length,
+                qualitiesStatus: qualitiesStatus,
+            });
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            logger.error({ error: errorMessage }, 'Error processing one or more qualities');
+            reject(err);
+            return;
         }
 
         logger.info(`HLS generated using ${encoder} (${qualities.length} qualities)`);
@@ -338,8 +395,6 @@ export const generateHLS = async (
             thumbnailTimeout++;
         }
 
-        onProgress(100);
-
         const result: HLSResult = {
             masterPlaylist: path.join(outputPath, 'index.m3u8'),
             thumbnails: thumbResult.thumbnails,
@@ -348,7 +403,6 @@ export const generateHLS = async (
             thumbnailsSprite: thumbResult.sprite || undefined,
             thumbnailsVtt: thumbResult.vtt || undefined,
         };
-
 
         resolve(result);
     });

@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { generateHLS } from './ffmpeg';
 import fs from 'fs';
 import { logger } from '../logger';
+import type { ProgressInfo } from './ffmpeg/types';
 
 interface QueueItem {
     id: string;
@@ -28,7 +29,11 @@ class ProcessingQueue extends EventEmitter {
     private queue: QueueItem[] = [];
     private isProcessing = false;
     private currentJobId: string | null = null;
-    private currentProgress: number = 0;
+    private currentProgressInfo: ProgressInfo | null = null;
+
+    private getDetails(): ProgressInfo['details'] {
+        return this.currentProgressInfo ? this.currentProgressInfo.details : {};
+    }
 
     add(item: Omit<QueueItem, 'resolve'>): Promise<{ 
         success: boolean; 
@@ -54,8 +59,8 @@ class ProcessingQueue extends EventEmitter {
         this.isProcessing = true;
         const item = this.queue.shift()!;
         this.currentJobId = item.id;
-        this.currentProgress = 0;
-        
+        this.currentProgressInfo = null;
+
         const startTime = Date.now();
         logger.info(`Job ${item.id} started at ${new Date(startTime).toLocaleTimeString()}`);
 
@@ -68,14 +73,19 @@ class ProcessingQueue extends EventEmitter {
                 item.inputPath,
                 outputPath,
                 item.videoId,
-                (percent) => {
-                    this.currentProgress = percent;
-                    this.emit('job-progress', item, percent);
+                (progressInfo: ProgressInfo) => {
+                    this.currentProgressInfo = progressInfo;
+                    this.emit('job-progress', item, progressInfo);
                 }
             );
 
-            this.currentProgress = 100;
-            
+            const finalInfo: ProgressInfo = {
+                percent: 100,
+                stage: 'done',
+                details: this.getDetails(),
+            };
+            this.emit('job-progress', item, finalInfo);
+
             const endTime = Date.now();
             const elapsedSeconds = (endTime - startTime) / 1000;
             const formattedTime = formatDuration(elapsedSeconds);
@@ -93,8 +103,8 @@ class ProcessingQueue extends EventEmitter {
             }
 
             this.emit('job-complete', item, { startTime, endTime, elapsedSeconds: formattedTime });
-            item.resolve({ 
-                success: true, 
+            item.resolve({
+                success: true,
                 outputPath: `${outputPath}/${item.videoId}/index.m3u8`,
                 thumbnails: result.thumbnails
             });
@@ -109,14 +119,14 @@ class ProcessingQueue extends EventEmitter {
                 `Job ${item.id} failed after ${formattedTime}`
             );
             this.emit('job-error', item, error);
-            item.resolve({ 
-                success: false, 
-                error: String(error) 
+            item.resolve({
+                success: false,
+                error: String(error)
             });
         } finally {
             this.isProcessing = false;
             this.currentJobId = null;
-            this.currentProgress = 0;
+            this.currentProgressInfo = null;
             this.processNext();
         }
     }
@@ -126,7 +136,8 @@ class ProcessingQueue extends EventEmitter {
             queueLength: this.queue.length,
             isProcessing: this.isProcessing,
             currentJobId: this.currentJobId,
-            currentProgress: this.currentProgress,
+            currentProgress: this.currentProgressInfo?.percent || 0,
+            currentStage: this.currentProgressInfo?.stage || 'idle',
         };
     }
 }
@@ -141,9 +152,9 @@ processingQueue.on('job-start', (item) => {
     logger.info(`Processing job: ${item.id}`);
 });
 
-processingQueue.on('job-progress', (item, percent) => {
-    if (percent % 10 === 0 || percent === 100) {
-        logger.info(`Job ${item.id}: ${percent}%`);
+processingQueue.on('job-progress', (item, progressInfo) => {
+    if (progressInfo.percent % 10 === 0 || progressInfo.percent === 100) {
+        logger.info(`Job ${item.id}: ${progressInfo.percent}% - Stage: ${progressInfo.stage}`);
     }
 });
 

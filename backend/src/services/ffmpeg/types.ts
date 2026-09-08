@@ -1,3 +1,4 @@
+// backend/src/services/ffmpeg/types.ts
 export interface QualityProfile {
     name: string;
     resolution: string;
@@ -62,4 +63,25 @@ export interface VideoMetadata {
     qualities: string[];
     audioTracks: AudioTrack[];
     subtitleTracks: SubtitleTrack[];
+}
+
+export interface ProgressInfo {
+  percent: number;
+  stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'qualities' | 'done';
+  details?: {
+    audioTracksExtracted?: number;
+    totalAudioTracks?: number;
+    subtitlesExtracted?: number;
+    totalSubtitles?: number;
+    thumbnailsGenerated?: number;
+    totalThumbnails?: number;
+    spriteGenerated?: boolean;
+    completedQualities?: number;
+    totalQualities?: number;
+    currentQuality?: string;
+    qualitiesStatus?: {
+      name: string;
+      status: 'pending' | 'processing' | 'completed' | 'failed';
+    }[];
+  };
 }

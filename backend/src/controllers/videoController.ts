@@ -7,6 +7,7 @@ import { processingQueue } from '../services/queueService';
 import { config } from '../config';
 import { VideoMetadataService } from '../services/videoMetadata';
 import { logger } from '../logger';
+import { ProgressInfo } from '../services/ffmpeg/types';
 
 const metadataService = new VideoMetadataService(config.outputFolder);
 

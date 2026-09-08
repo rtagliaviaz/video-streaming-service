@@ -113,7 +113,6 @@ export const generateThumbnails = async (
                                 return;
                             }
                         } else {
-                            // Linux/Mac: glob pattern
                             spriteArgs = [
                                 '-pattern_type', 'glob',
                                 '-i', path.join(thumbDir, 'thumb_*.jpg'),
@@ -140,7 +139,6 @@ export const generateThumbnails = async (
                             }
 
                             if (code === 0) {
-                                // generar VTT
                                 const vttContent = generateVttContent(
                                     numThumbnails,
                                     cols,

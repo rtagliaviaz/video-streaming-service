@@ -7,7 +7,7 @@ import { TimeDisplay } from './TimeDisplay';
 import { SubtitleSelector } from './SubtitleSelector';
 import { AudioSelector } from './AudioSelector';
 import { SpeedSelector } from './SpeedSelector';
-import { FullscreenButton } from './FullScreenButton';
+import { FullscreenButton } from './FullscreenButton';
 import type { Quality, AudioTrack, SubtitleTrack } from '../../types';
 
 interface ControlsProps {
