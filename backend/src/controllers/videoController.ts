@@ -172,7 +172,13 @@ export const videoController = {
         const thumbPath = path.join(config.outputFolder, videoId, 'thumbnails', thumbnail);
 
         if (!fs.existsSync(thumbPath)) {
-            return res.status(404).json({ error: 'Thumbnail not found' });
+            return res.status(404).json({ error: 'File not found' });
+        }
+
+        // si es vtt establecer el tipo correcto en el header
+        if (thumbnail.endsWith('.vtt')) {
+            res.setHeader('Content-Type', 'text/vtt');
+            res.setHeader('Cache-Control', 'no-cache');
         }
 
         res.sendFile(thumbPath);

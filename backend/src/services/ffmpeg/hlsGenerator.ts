@@ -133,7 +133,6 @@ function runFFmpegWithProgress(
     });
 }
 
-
 async function extractAudioTracks(
     inputPath: string,
     outputPath: string,
@@ -265,10 +264,10 @@ export const generateHLS = async (
             logger.info(`Output directory created: ${outputPath}`);
         }
 
-        let thumbnails: string[] = [];
+        let thumbResult = { thumbnails: [] as string[], sprite: '', vtt: '' };
         try {
-            thumbnails = await generateThumbnails(inputPath, outputDir, videoId, 10);
-            logger.info(`Thumbnails generated: ${thumbnails.length}`);
+            thumbResult = await generateThumbnails(inputPath, outputDir, videoId, 40);
+            logger.info(`Thumbnails generated: ${thumbResult.thumbnails.length} individual, sprite: ${thumbResult.sprite}, vtt: ${thumbResult.vtt}`);
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.warn({ error: errorMessage }, 'Error generating thumbnails');
@@ -334,18 +333,23 @@ export const generateHLS = async (
         generateMasterPlaylist(outputPath, qualities, videoInfo.audioTracks, videoInfo.subtitleTracks);
 
         let thumbnailTimeout = 0;
-        while (thumbnails.length === 0 && thumbnailTimeout < 50) {
+        while (thumbResult.thumbnails.length === 0 && thumbnailTimeout < 50) {
             await new Promise(resolve => setTimeout(resolve, 100));
             thumbnailTimeout++;
         }
 
         onProgress(100);
 
-        resolve({
+        const result: HLSResult = {
             masterPlaylist: path.join(outputPath, 'index.m3u8'),
-            thumbnails,
+            thumbnails: thumbResult.thumbnails,
             audioTracks: videoInfo.audioTracks,
-            subtitleTracks: videoInfo.subtitleTracks
-        });
+            subtitleTracks: videoInfo.subtitleTracks,
+            thumbnailsSprite: thumbResult.sprite || undefined,
+            thumbnailsVtt: thumbResult.vtt || undefined,
+        };
+
+
+        resolve(result);
     });
 };

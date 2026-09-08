@@ -48,6 +48,8 @@ export interface HLSResult {
     thumbnails: string[];
     audioTracks: AudioTrack[];
     subtitleTracks: SubtitleTrack[];
+    thumbnailsSprite?: string;
+    thumbnailsVtt?: string; 
 }
 
 export interface VideoMetadata {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef} from 'react';
 import { ProgressBar } from './ProgressBar';
 import { QualitySelector } from './QualitySelector';
 import { AudioMenu } from './AudioMenu';
@@ -45,6 +45,9 @@ interface ControlsProps {
 
     playbackSpeed: number;
     onPlaybackSpeedChange: (speed: number) => void;
+
+    onProgressMouseMove?: (mouseX: number, containerWidth: number) => void;
+    onProgressHover?: (isHovering: boolean) => void;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -77,11 +80,32 @@ export const Controls: React.FC<ControlsProps> = ({
     onSubtitlesToggle, 
     playbackSpeed,
     onPlaybackSpeedChange,
+    onProgressMouseMove,
+    onProgressHover,
 }) => {
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
-
     const [showAudioMenu, setShowAudioMenu] = useState(false);
     const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+    
+    const progressContainerRef = useRef<HTMLDivElement>(null);
+
+    const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!progressContainerRef.current) return;
+        const rect = progressContainerRef.current.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const clampedX = Math.max(0, Math.min(rect.width, x));
+        if (onProgressMouseMove) {
+            onProgressMouseMove(clampedX, rect.width);
+        }
+    };
+
+    const handleMouseEnter = () => {
+        if (onProgressHover) onProgressHover(true);
+    };
+
+    const handleMouseLeave = () => {
+        if (onProgressHover) onProgressHover(false);
+    };
 
     const getCurrentAudioLabel = () => {
         if (audioTracks.length <= 1) return null;
@@ -121,12 +145,20 @@ export const Controls: React.FC<ControlsProps> = ({
                 pointerEvents: showControls ? 'auto' : 'none',
             }}
         >
-            <ProgressBar
-                currentTime={currentTime}
-                duration={duration}
-                bufferedProgress={bufferedProgress}
-                onSeek={onSeek}
-            />
+            <div
+                ref={progressContainerRef}
+                onMouseMove={handleMouseMove}
+                onMouseEnter={handleMouseEnter}
+                onMouseLeave={handleMouseLeave}
+                style={{ width: '100%', position: 'relative' }}
+            >
+                <ProgressBar
+                    currentTime={currentTime}
+                    duration={duration}
+                    bufferedProgress={bufferedProgress}
+                    onSeek={onSeek}
+                />
+            </div>
 
             <div style={{
                 display: 'flex',
@@ -134,8 +166,8 @@ export const Controls: React.FC<ControlsProps> = ({
                 gap: '0.75rem',
                 color: 'white',
                 flexWrap: 'wrap',
+                marginTop: '0.5rem',
             }}>
-                {/* play/pause */}
                 <button
                     onClick={onTogglePlay}
                     style={{
@@ -159,7 +191,6 @@ export const Controls: React.FC<ControlsProps> = ({
                     {isPlaying ? '⏸️' : '▶️'}
                 </button>
 
-                {/* volume */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                     <button
                         onClick={onToggleMute}
@@ -193,15 +224,12 @@ export const Controls: React.FC<ControlsProps> = ({
                     />
                 </div>
 
-                {/* time */}
                 <span style={{ fontSize: '0.8rem', minWidth: '80px', fontVariantNumeric: 'tabular-nums' }}>
                     {formatTime(currentTime)} / {formatTime(duration)}
                 </span>
 
-                {/* spacer */}
                 <div style={{ flex: 1 }} />
 
-                {/* subtitle selector */}
                 {subtitleTracks.length > 0 && (
                     <div style={{ position: 'relative' }}>
                         <button
@@ -243,7 +271,6 @@ export const Controls: React.FC<ControlsProps> = ({
                     </div>
                 )}
 
-                {/* audio Selector */}
                 {audioTracks.length > 1 && (
                     <div style={{ position: 'relative' }}>
                         <button
@@ -286,7 +313,6 @@ export const Controls: React.FC<ControlsProps> = ({
                     </div>
                 )}
 
-                {/* Quality selector */}
                 <QualitySelector
                     qualities={qualities}
                     currentQuality={currentQuality}
@@ -325,7 +351,6 @@ export const Controls: React.FC<ControlsProps> = ({
                     )}
                 </div>
 
-                {/* Fullscreen */}
                 <button
                     onClick={onToggleFullscreen}
                     style={{
