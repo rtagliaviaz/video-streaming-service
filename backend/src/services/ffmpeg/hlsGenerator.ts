@@ -2,7 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
 import pLimit from 'p-limit';
-import { QualityProfile, HLSResult, ProgressInfo } from './types';
+import { QualityProfile, HLSResult, ProgressInfo, CodecVariant } from './types';
 import { QUALITY_PROFILES, HLS_CONFIG } from './config';
 import { getVideoInfo } from './videoInfo';
 import { checkGPUAvailability } from './gpuDetector';
@@ -19,13 +19,13 @@ function buildFFmpegArgs(
     gopSize: number,
     isWindows: boolean,
     segmentPath: string,
-    outputFile: string
+    outputFile: string,
+    initFile: string
 ): string[] {
     const baseArgs = [
         '-i', inputPath,
         '-map', '0:v:0',
         '-c:v', encoder,
-        '-preset', encoder === 'h264_nvenc' ? 'p4' : 'fast',
         '-b:v', quality.bitrate,
         '-maxrate', quality.maxrate,
         '-bufsize', quality.bufsize,
@@ -33,12 +33,21 @@ function buildFFmpegArgs(
         '-g', String(gopSize),
     ];
 
+    if (encoder === 'hevc_nvenc') {
+        baseArgs.push('-preset', 'p5');
+        baseArgs.push('-profile:v', 'main');
+    } else if (encoder === 'h264_nvenc') {
+        baseArgs.push('-preset', 'p4');
+    } else {
+        baseArgs.push('-preset', 'fast');
+    }
+
     if (isWindows) {
         baseArgs.push('-strict_gop', '1');
         baseArgs.push('-force_key_frames', 'expr:gte(t,n_forced*2)');
     }
 
-    if (encoder === 'h264_nvenc') {
+    if (encoder.includes('nvenc')) {
         baseArgs.push(
             '-rc', 'vbr',
             '-cq', '23',
@@ -53,12 +62,18 @@ function buildFFmpegArgs(
     baseArgs.push(
         '-an',
         '-f', 'hls',
-        '-hls_time', '2',
+        '-hls_time', String(HLS_CONFIG.segmentDuration),
         '-hls_list_size', '0',
         '-hls_playlist_type', 'vod',
         '-hls_segment_filename', segmentPath,
         outputFile
     );
+
+    if (HLS_CONFIG.useFmp4) {
+        baseArgs.push('-hls_segment_type', 'fmp4');
+        baseArgs.push('-hls_fmp4_init_filename', initFile);
+        baseArgs.push('-hls_flags', 'independent_segments+program_date_time');
+    }
 
     return baseArgs;
 }
@@ -140,7 +155,7 @@ async function extractAudioTracks(
     for (let i = 0; i < audioTracks.length; i++) {
         const audioPlaylist = `audio_${i}.m3u8`;
         const audioOutput = path.join(outputPath, audioPlaylist);
-        const segmentTemplate = path.join(outputPath, `audio_${i}_%03d.ts`);
+        const segmentTemplate = path.join(outputPath, `audio_${i}_%03d.m4s`);
 
         const args = [
             '-i', inputPath,
@@ -148,12 +163,19 @@ async function extractAudioTracks(
             '-c:a', 'aac',
             '-b:a', audioBitrate,
             '-f', 'hls',
-            '-hls_time', '4',
+            '-hls_time', String(HLS_CONFIG.segmentDuration),
             '-hls_list_size', '0',
             '-hls_playlist_type', 'vod',
             '-hls_segment_filename', segmentTemplate,
             audioOutput
         ];
+
+        if (HLS_CONFIG.useFmp4) {
+            args.push('-hls_segment_type', 'fmp4');
+            const initAudio = `init_audio_${i}.mp4`;
+            args.push('-hls_fmp4_init_filename', initAudio);
+            args.push('-hls_flags', 'independent_segments+program_date_time');
+        }
 
         await new Promise((resolve, reject) => {
             const proc = spawn('ffmpeg', args, { windowsHide: true });
@@ -220,8 +242,12 @@ export const generateHLS = async (
     outputDir: string,
     videoId: string,
     onProgress: (info: ProgressInfo) => void,
-    qualities: QualityProfile[] = QUALITY_PROFILES
+    selectedQualityNames?: string[] | null 
 ): Promise<HLSResult> => {
+    const qualities = selectedQualityNames && selectedQualityNames.length > 0
+        ? QUALITY_PROFILES.filter(q => selectedQualityNames.includes(q.name))
+        : QUALITY_PROFILES;
+        
     const videoInfo = await getVideoInfo(inputPath);
     logger.info(
         {
@@ -246,10 +272,18 @@ export const generateHLS = async (
     });
 
     const gpuInfo = await checkGPUAvailability();
-    const encoder = gpuInfo.hasGPU ? 'h264_nvenc' : 'libx264';
-    logger.info(`Using encoder: ${encoder}${gpuInfo.hasGPU ? ` (GPU: ${gpuInfo.gpuInfo})` : ' (CPU)'}`);
-
     const isWindows = process.platform === 'win32';
+
+    const generateHevc = HLS_CONFIG.enableHevc && gpuInfo.supportsHevc && isWindows;
+    const h264Encoder = gpuInfo.hasGPU && isWindows ? 'h264_nvenc' : 'libx264';
+
+    logger.info(`H.264 encoder: ${h264Encoder}`);
+    if (generateHevc) {
+        logger.info(`HEVC encoder: hevc_nvenc (GPU: ${gpuInfo.gpuInfo})`);
+    } else {
+        logger.info('HEVC generation disabled (not supported or disabled in config)');
+    }
+
     logger.info(`OS: ${process.platform} (${isWindows ? 'Windows' : 'Linux/Docker'})`);
 
     return new Promise(async (resolve, reject) => {
@@ -266,6 +300,7 @@ export const generateHLS = async (
                 details: details || {},
             });
         };
+
 
         let thumbResult = { thumbnails: [] as string[], sprite: '', vtt: '' };
         try {
@@ -306,88 +341,68 @@ export const generateHLS = async (
             logger.warn({ error: errorMessage }, 'Error extracting subtitles');
         }
 
-        logger.info(`Processing ${qualities.length} qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
         const gopSize = videoInfo.gopSize || 48;
+        const codecVariants: CodecVariant[] = [];
 
-        const qualityProgress = new Array(qualities.length).fill(0);
-        const qualitiesStatus: { name: string; status: 'pending' | 'processing' | 'completed' | 'failed' }[] = 
-            qualities.map(q => ({
-                name: q.name,
-                status: 'pending' as const,
-            }));
 
-        const updateTotalProgress = () => {
-            const total = qualityProgress.reduce((sum, p) => sum + p, 0) / qualities.length;
-            const percent = 20 + (total / 100) * 80;
-            const rounded = Math.min(Math.round(percent), 100);
-            const completed = qualitiesStatus.filter(q => q.status === 'completed').length;
-            const current = qualitiesStatus.find(q => q.status === 'processing');
-            emitProgress('qualities', rounded, {
-                completedQualities: completed,
-                totalQualities: qualities.length,
-                currentQuality: current?.name,
-                qualitiesStatus: [...qualitiesStatus],
-            });
-        };
+        logger.info(`Processing ${qualities.length} H.264 qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
+        const h264Qualities = await processCodecQualities(
+            inputPath,
+            outputPath,
+            qualities,
+            h264Encoder,
+            gopSize,
+            isWindows,
+            'h264',
+            (percent, details) => {
+                emitProgress('h264', 20 + (percent / 100) * 40, details);
+            }
+        );
 
-        const processQuality = async (qIndex: number): Promise<void> => {
-            const quality = qualities[qIndex];
-            qualitiesStatus[qIndex].status = 'processing';
-            updateTotalProgress();
+        codecVariants.push({
+            encoder: h264Encoder,
+            codecName: 'h264',
+            playlistPrefix: 'playlist_h264',
+            segmentPrefix: 'segment_h264',
+            initPrefix: 'init_h264',
+            qualities: h264Qualities,
+            masterPlaylist: path.join(outputPath, 'h264.m3u8'),
+        });
 
-            const segmentName = `segment_${quality.name}_%03d.ts`;
-            const playlistName = `playlist_${quality.name}.m3u8`;
-            const outputFile = path.join(outputPath, playlistName);
-            const segmentPath = path.join(outputPath, segmentName);
 
-            const args = buildFFmpegArgs(
+        if (generateHevc) {
+            logger.info(`Processing ${qualities.length} HEVC qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
+            const hevcQualities = await processCodecQualities(
                 inputPath,
-                quality,
-                encoder,
+                outputPath,
+                qualities,
+                'hevc_nvenc',
                 gopSize,
                 isWindows,
-                segmentPath,
-                outputFile
+                'hevc',
+                (percent, details) => {
+                    emitProgress('hevc', 60 + (percent / 100) * 40, details);
+                }
             );
 
-            logger.info(`[${qIndex + 1}/${qualities.length}] Processing ${quality.name}...`);
-
-            const onQualityProgress = (percent: number) => {
-                qualityProgress[qIndex] = percent;
-                updateTotalProgress();
-            };
-
-            try {
-                await runFFmpegWithProgress(args, isWindows, quality.name, onQualityProgress);
-                qualitiesStatus[qIndex].status = 'completed';
-                qualityProgress[qIndex] = 100;
-                updateTotalProgress();
-            } catch (err) {
-                qualitiesStatus[qIndex].status = 'failed';
-                throw err;
-            }
-        };
-
-        const limit = pLimit(CONCURRENCY_LIMIT);
-        const tasks = qualities.map((_, index) => limit(() => processQuality(index)));
-
-        try {
-            await Promise.all(tasks);
-            emitProgress('done', 100, {
-                completedQualities: qualities.length,
-                totalQualities: qualities.length,
-                qualitiesStatus: qualitiesStatus,
+            codecVariants.push({
+                encoder: 'hevc_nvenc',
+                codecName: 'hevc',
+                playlistPrefix: 'playlist_hevc',
+                segmentPrefix: 'segment_hevc',
+                initPrefix: 'init_hevc',
+                qualities: hevcQualities,
+                masterPlaylist: path.join(outputPath, 'hevc.m3u8'),
             });
-        } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            logger.error({ error: errorMessage }, 'Error processing one or more qualities');
-            reject(err);
-            return;
         }
 
-        logger.info(`HLS generated using ${encoder} (${qualities.length} qualities)`);
-
-        generateMasterPlaylist(outputPath, qualities, videoInfo.audioTracks, videoInfo.subtitleTracks);
+        logger.info('Generating master playlist with multiple codecs...');
+        const masterPath = await generateMasterPlaylist(
+            outputPath,
+            codecVariants,
+            videoInfo.audioTracks,
+            videoInfo.subtitleTracks
+        );
 
         let thumbnailTimeout = 0;
         while (thumbResult.thumbnails.length === 0 && thumbnailTimeout < 50) {
@@ -395,15 +410,104 @@ export const generateHLS = async (
             thumbnailTimeout++;
         }
 
+        emitProgress('done', 100, {
+            completedQualities: qualities.length,
+            totalQualities: qualities.length,
+        });
+
         const result: HLSResult = {
-            masterPlaylist: path.join(outputPath, 'index.m3u8'),
+            masterPlaylist: masterPath,
             thumbnails: thumbResult.thumbnails,
             audioTracks: videoInfo.audioTracks,
             subtitleTracks: videoInfo.subtitleTracks,
             thumbnailsSprite: thumbResult.sprite || undefined,
             thumbnailsVtt: thumbResult.vtt || undefined,
+            codecVariants,
         };
 
         resolve(result);
     });
 };
+
+
+async function processCodecQualities(
+    inputPath: string,
+    outputPath: string,
+    qualities: QualityProfile[],
+    encoder: string,
+    gopSize: number,
+    isWindows: boolean,
+    codecName: string,
+    onProgress: (percent: number, details: any) => void
+): Promise<QualityProfile[]> {
+    const qualityProgress = new Array(qualities.length).fill(0);
+    const qualitiesStatus: { name: string; status: 'pending' | 'processing' | 'completed' | 'failed' }[] =
+        qualities.map(q => ({
+            name: q.name,
+            status: 'pending' as const,
+        }));
+
+    const updateTotalProgress = () => {
+        const total = qualityProgress.reduce((sum, p) => sum + p, 0) / qualities.length;
+        const completed = qualitiesStatus.filter(q => q.status === 'completed').length;
+        const current = qualitiesStatus.find(q => q.status === 'processing');
+        onProgress(total, {
+            completedQualities: completed,
+            totalQualities: qualities.length,
+            currentQuality: current?.name,
+            qualitiesStatus: [...qualitiesStatus],
+        });
+    };
+
+    const processQuality = async (qIndex: number): Promise<void> => {
+        const quality = qualities[qIndex];
+        qualitiesStatus[qIndex].status = 'processing';
+        updateTotalProgress();
+
+        const segmentName = `segment_${codecName}_${quality.name}_%03d.m4s`;
+        const initName = `init_${codecName}_${quality.name}.mp4`;
+        const playlistName = `playlist_${codecName}_${quality.name}.m3u8`;
+        const outputFile = path.join(outputPath, playlistName);
+        const segmentPath = path.join(outputPath, segmentName);
+
+        const args = buildFFmpegArgs(
+            inputPath,
+            quality,
+            encoder,
+            gopSize,
+            isWindows,
+            segmentPath,
+            outputFile,
+            initName
+        );
+
+        logger.info(`[${codecName.toUpperCase()}] [${qIndex + 1}/${qualities.length}] Processing ${quality.name}...`);
+
+        const onQualityProgress = (percent: number) => {
+            qualityProgress[qIndex] = percent;
+            updateTotalProgress();
+        };
+
+        try {
+            await runFFmpegWithProgress(args, isWindows, `${codecName.toUpperCase()} ${quality.name}`, onQualityProgress);
+            qualitiesStatus[qIndex].status = 'completed';
+            qualityProgress[qIndex] = 100;
+            updateTotalProgress();
+        } catch (err) {
+            qualitiesStatus[qIndex].status = 'failed';
+            throw err;
+        }
+    };
+
+    const limit = pLimit(CONCURRENCY_LIMIT);
+    const tasks = qualities.map((_, index) => limit(() => processQuality(index)));
+
+    try {
+        await Promise.all(tasks);
+        return qualities;
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logger.error({ codec: codecName, error: errorMessage }, `Error processing ${codecName} qualities`);
+        throw err;
+    }
+}

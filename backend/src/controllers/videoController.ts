@@ -2,12 +2,11 @@ import { Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { generateHLS, checkGPUAvailability, getVideoInfo } from '../services/ffmpeg';
+import { checkGPUAvailability, getVideoInfo } from '../services/ffmpeg';
 import { processingQueue } from '../services/queueService';
 import { config } from '../config';
 import { VideoMetadataService } from '../services/videoMetadata';
 import { logger } from '../logger';
-import { ProgressInfo } from '../services/ffmpeg/types';
 
 const metadataService = new VideoMetadataService(config.outputFolder);
 
@@ -98,6 +97,17 @@ export const videoController = {
                 return res.status(400).json({ error: 'No file uploaded' });
             }
 
+            let selectedQualities: string[] | null = null;
+            if (req.body.qualities) {
+                try {
+                    selectedQualities = typeof req.body.qualities === 'string' 
+                        ? JSON.parse(req.body.qualities) 
+                        : req.body.qualities;
+                } catch (e) {
+                    logger.warn('Invalid qualities format, using all qualities');
+                }
+            }
+
             const videoId = `video_${Date.now()}`;
             const inputPath = file.path;
             const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
@@ -111,9 +121,9 @@ export const videoController = {
                 originalName: originalName,
                 createdAt: new Date().toISOString(),
                 duration: info.duration,
-                durationFormatted: info.durationFormatted, 
+                durationFormatted: info.durationFormatted,
                 size: stats.size,
-                qualities: [],
+                qualities: selectedQualities || [],
                 audioTracks: info.audioTracks,
                 subtitleTracks: info.subtitleTracks,
             });
@@ -124,6 +134,7 @@ export const videoController = {
                 videoId,
                 originalName,
                 message: 'Video processing started',
+                qualities: selectedQualities,
             });
 
             processingQueue.add({
@@ -131,6 +142,7 @@ export const videoController = {
                 videoId,
                 inputPath,
                 outputDir: config.outputFolder,
+                qualities: selectedQualities,
             }).catch((error) => {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.error({ jobId, error: errorMessage }, `Job ${jobId} failed`);
@@ -163,6 +175,16 @@ export const videoController = {
 
         if (!fs.existsSync(segmentPath)) {
             return res.status(404).json({ error: 'Segment not found' });
+        }
+
+        if (segment.endsWith('.m4s')) {
+            res.setHeader('Content-Type', 'video/mp4');
+        } else if (segment.endsWith('.mp4')) {
+            res.setHeader('Content-Type', 'video/mp4');
+        } else if (segment.endsWith('.ts')) {
+            res.setHeader('Content-Type', 'video/mp2t');
+        } else if (segment.endsWith('.m3u8')) {
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         }
 
         res.sendFile(segmentPath);

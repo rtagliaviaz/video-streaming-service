@@ -66,10 +66,18 @@ export const QUALITY_PROFILES: QualityProfile[] = [
     }
 ];
 
+export const getQualitiesByNames = (names: string[]): QualityProfile[] => {
+    if (!names || names.length === 0) return QUALITY_PROFILES;
+    return QUALITY_PROFILES.filter(q => names.includes(q.name));
+};
+
 export const HLS_CONFIG = {
-    segmentDuration: 6,
+    segmentDuration: 2,
     audioBitrate: '128k',
     audioCodec: 'aac',
     videoPresetGPU: 'p4',
     videoPresetCPU: 'fast',
+    useFmp4: true,
+    enableHevc: true,
 };
+

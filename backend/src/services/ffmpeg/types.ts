@@ -1,4 +1,3 @@
-// backend/src/services/ffmpeg/types.ts
 export interface QualityProfile {
     name: string;
     resolution: string;
@@ -34,14 +33,25 @@ export interface VideoInfo {
     width: number;
     height: number;
     codec: string;
-    fps: number; 
-    gopSize: number; 
+    fps: number;
+    gopSize: number;
 }
 
 export interface GPUInfo {
     hasGPU: boolean;
     encoder: string;
     gpuInfo?: string;
+    supportsHevc?: boolean;
+}
+
+export interface CodecVariant {
+    encoder: string;
+    codecName: string;
+    playlistPrefix: string; 
+    segmentPrefix: string; 
+    initPrefix: string;
+    qualities: QualityProfile[];
+    masterPlaylist: string;
 }
 
 export interface HLSResult {
@@ -50,7 +60,8 @@ export interface HLSResult {
     audioTracks: AudioTrack[];
     subtitleTracks: SubtitleTrack[];
     thumbnailsSprite?: string;
-    thumbnailsVtt?: string; 
+    thumbnailsVtt?: string;
+    codecVariants: CodecVariant[];
 }
 
 export interface VideoMetadata {
@@ -58,7 +69,7 @@ export interface VideoMetadata {
     originalName: string;
     createdAt: string;
     duration: number;
-    durationFormatted?: string; 
+    durationFormatted?: string;
     size: number;
     qualities: string[];
     audioTracks: AudioTrack[];
@@ -66,22 +77,22 @@ export interface VideoMetadata {
 }
 
 export interface ProgressInfo {
-  percent: number;
-  stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'qualities' | 'done';
-  details?: {
-    audioTracksExtracted?: number;
-    totalAudioTracks?: number;
-    subtitlesExtracted?: number;
-    totalSubtitles?: number;
-    thumbnailsGenerated?: number;
-    totalThumbnails?: number;
-    spriteGenerated?: boolean;
-    completedQualities?: number;
-    totalQualities?: number;
-    currentQuality?: string;
-    qualitiesStatus?: {
-      name: string;
-      status: 'pending' | 'processing' | 'completed' | 'failed';
-    }[];
-  };
+    percent: number;
+    stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'h264' | 'hevc' | 'done';
+    details?: {
+        audioTracksExtracted?: number;
+        totalAudioTracks?: number;
+        subtitlesExtracted?: number;
+        totalSubtitles?: number;
+        thumbnailsGenerated?: number;
+        totalThumbnails?: number;
+        spriteGenerated?: boolean;
+        completedQualities?: number;
+        totalQualities?: number;
+        currentQuality?: string;
+        qualitiesStatus?: {
+            name: string;
+            status: 'pending' | 'processing' | 'completed' | 'failed';
+        }[];
+    };
 }

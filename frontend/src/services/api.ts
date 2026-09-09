@@ -5,19 +5,51 @@ const api = axios.create({
 });
 
 export const videoApi = {
-    uploadVideo: (file: File, onProgress: (percent: number) => void) => {
+    uploadVideo: async (
+        file: File,
+        onProgress?: (percent: number) => void,
+        qualities?: string[] 
+    ): Promise<{ data: { jobId: string; videoId: string; originalName: string; qualities?: string[] } }> => {
         const formData = new FormData();
         formData.append('video', file);
-        return api.post('/upload', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' },
-            onUploadProgress: (progressEvent) => {
-                if (progressEvent.total) {
-                    const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+        if (qualities && qualities.length > 0) {
+            formData.append('qualities', JSON.stringify(qualities));
+        }
+
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/upload', true);
+
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable && onProgress) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
                     onProgress(percent);
                 }
-            },
+            };
+
+            xhr.onload = () => {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        resolve({ data: response });
+                    } catch (e) {
+                        reject(new Error('Invalid response'));
+                    }
+                } else {
+                    try {
+                        const error = JSON.parse(xhr.responseText);
+                        reject(new Error(error.error || 'Upload failed'));
+                    } catch (e) {
+                        reject(new Error('Upload failed'));
+                    }
+                }
+            };
+
+            xhr.onerror = () => reject(new Error('Network error'));
+            xhr.send(formData);
         });
     },
+
     getGPUInfo: () => api.get('/gpu/info'),
     getQueueStatus: () => api.get('/queue/status'),
     getVideos: () => api.get('/videos'),

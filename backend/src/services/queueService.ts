@@ -9,6 +9,7 @@ interface QueueItem {
     videoId: string;
     inputPath: string;
     outputDir: string;
+    qualities?: string[] | null;
     startTime?: number;
     resolve: (value: { 
         success: boolean; 
@@ -76,7 +77,8 @@ class ProcessingQueue extends EventEmitter {
                 (progressInfo: ProgressInfo) => {
                     this.currentProgressInfo = progressInfo;
                     this.emit('job-progress', item, progressInfo);
-                }
+                },
+                item.qualities
             );
 
             const finalInfo: ProgressInfo = {
