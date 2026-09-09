@@ -10,7 +10,7 @@
 ![GPU Acceleration](https://img.shields.io/badge/GPU-NVENC-76B900?logo=nvidia)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceleration, multi-audio track support, adaptive bitrate streaming, and subtitle extraction, and sprite sheet thumbnails with seeking preview.
+A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceleration, multi-audio track support, adaptive bitrate streaming, subtitle extraction, and sprite sheet thumbnails with seeking preview.
 
 ## Index
 
@@ -26,11 +26,15 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [How It Works](#how-it-works)
 - [Project Structure](#project-structure)
+- [Testing](#testing)
 - [License](#license)
 
 ## Features
 
 - **GPU Acceleration** – Uses NVIDIA NVENC for ultra-fast encoding (20x faster than CPU)
+- **Dual Codec Support** – Generates both H.264 (universal) and HEVC (GPU-accelerated on Windows) with automatic client-side selection
+- **CMAF / fMP4** – Modern streaming format with `.m4s` segments and `init.mp4` files
+- **Quality Selection** – Choose which qualities to encode (default: 480p, 720p, 1080p, 1440p) to save processing time
 - **Multi-Audio Support** – Handles videos with multiple audio tracks (languages, commentary, etc.)
 - **Subtitles** – Extracts subtitles to WebVTT with manual parsing and language selection
 - **Adaptive Bitrate Streaming** – 7 quality levels (144p to 1440p) with automatic switching
@@ -38,13 +42,22 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 - **Real-time Progress** – Server-Sent Events (SSE) for live upload and processing updates
 - **Sprite Sheet Thumbnails** – 40 thumbnails per video (160x90) organized in a sprite sheet with VTT coordinates for smooth seeking preview on the progress bar
 - **Thumbnail Preview on Hover** – When hovering over the progress bar, a thumbnail preview appears showing the exact frame at that position
-- **Thumbnails** – Automatic thumbnail generation for video preview
+- **Parallel Processing** – Up to 3 qualities encoded simultaneously with `p-limit`
 - **Bulk Delete** – Select and delete multiple videos at once
 - **Dockerized** – Run the entire stack with a single command
 
 ## GPU Acceleration (NVENC)
 
 This project supports GPU acceleration using NVIDIA NVENC for **local development** on Windows (with NVIDIA drivers installed).
+
+### Codec Decision Logic
+
+| Platform | GPU | HEVC Support | Encoder Used |
+|----------|-----|--------------|--------------|
+| Windows | NVIDIA | Yes | `hevc_nvenc` (HEVC) + `h264_nvenc` (H.264) |
+| Windows | NVIDIA | No | `h264_nvenc` (H.264) |
+| Windows | No | - | `libx264` (CPU) |
+| Linux | Any | - | `libx264` (CPU) |
 
 **Important:** When running with Docker (the default deployment method), the container uses the CPU encoder (`libx264`). This is because:
 
@@ -63,19 +76,28 @@ The application will automatically fall back to CPU if GPU is not available.
 
 **Backend**
 - Node.js + Express + TypeScript
-- FFmpeg with NVENC support
+- FFmpeg with NVENC support (H.264 + HEVC)
 - fluent-ffmpeg for ffprobe
 - Multer for file uploads
+- **p-limit** for concurrent processing control
 
 **Frontend**
 - React 19 + TypeScript
-- HLS.js for video playback
-- Vite for fast builds
+- HLS.js for video playback (native fMP4/CMAF support)
+- Custom hooks for video controls, subtitles, and thumbnails
 
 **Infrastructure**
 - Docker & Docker Compose
 - Nginx for serving frontend
 - Alpine Linux for lightweight images
+
+
+**Testing**
+- Vitest for unit and integration tests
+- Supertest for API testing
+- Mocked FFmpeg and external dependencies
+
+---
 
 ## Prerequisites
 
@@ -101,6 +123,7 @@ NODE_ENV=production
 PORT=3001
 VIDEO_FOLDER_PATH=./uploads
 OUTPUT_FOLDER_PATH=./hls
+LOG_LEVEL=info
 ```
 
 3. Start the services:
@@ -157,23 +180,45 @@ npm run dev
 
 ## How It Works
 
-1. **Upload** – Upload a video file through the web interface.
+### 1. Upload
+The user uploads a video file through the web interface. The frontend allows selecting which qualities to encode (default: 480p, 720p, 1080p, 1440p) to save processing time.
 
-2. **Processing** – The backend processes the video using FFmpeg:
+### 2. GPU Detection
+The backend checks:
 
-- Detects GPU availability (NVENC)
-- Extracts all audio tracks and creates separate HLS playlists
-- Extracts subtitles to WebVTT
-- Generates 7 quality levels (144p to 1440p) with dynamic GOP size (2 seconds)
-- Creates 40 thumbnail images (160x90) distributed evenly across the video duration
-- Builds a sprite sheet (8 columns × 5 rows) containing all thumbnails
-- Generates a VTT file with precise coordinates and timestamps for each thumbnail
+- `nvidia-smi` for NVIDIA GPU presence
+- `ffmpeg -encoders` for `h264_nvenc` and `hevc_nvenc` availability
+- Platform (Windows or Linux)
 
-3. **Thumbnail Preview** – The frontend loads the VTT file and sprite sheet. When the user hovers over the progress bar, the player calculates the corresponding time, looks up the correct tile in the VTT, and displays that portion of the sprite sheet as a preview.
+Based on this, it selects the appropriate encoder strategy:
 
-4. **Streaming** – The HLS playlist is served via Express.
+| Platform | GPU | HEVC Support | Encoder Used |
+|----------|-----|--------------|--------------|
+| Windows | NVIDIA | Yes | `hevc_nvenc` (HEVC) + `h264_nvenc` (H.264) |
+| Windows | NVIDIA | No | `h264_nvenc` (H.264) |
+| Windows | No | - | `libx264` (CPU) |
+| Linux | Any | - | `libx264` (CPU) |
 
-5. **Playback** – The frontend player (HLS.js) streams the video with adaptive bitrate, allowing users to switch quality, audio track, subtitles, and playback speed.
+### 3. Processing Pipeline
+The backend processes the video using FFmpeg:
+
+- **Thumbnails** – 40 thumbnail images (160×90) distributed evenly across the video duration, plus a sprite sheet (8×5 grid) and VTT file with coordinates.
+- **Audio Extraction** – Extracts all audio tracks and creates separate HLS playlists using fMP4 (`.m4s` + `init_audio_*.mp4`).
+- **Subtitle Extraction** – Extracts subtitles to WebVTT.
+- **Quality Encoding** – Processes selected qualities in parallel (up to 3 at a time):
+  - For each quality, generates H.264 version (always)
+  - If HEVC is available, generates HEVC version in parallel
+  - Uses fMP4 format (`.m4s` segments + `init_*.mp4` files)
+- **Master Playlist** – Generates `index.m3u8` containing all codec variants with:
+  - `CODECS` attribute (`avc1.640028` for H.264, `hvc1` for HEVC)
+  - Adjusted `BANDWIDTH` for HEVC (70% of H.264 equivalent)
+  - `AUDIO` and `SUBTITLES` groups when available
+
+### 4. Thumbnail Preview
+The frontend loads the VTT file and sprite sheet. When the user hovers over the progress bar, the player calculates the corresponding time, looks up the correct tile in the VTT, and displays that portion of the sprite sheet as a preview.
+
+### 5. Streaming & Playback
+The HLS playlist is served via Express. The frontend player (HLS.js) streams the video with adaptive bitrate, automatically selecting the best codec and quality variant based on the client's capabilities.
 
 ## Project Structure
 
@@ -212,6 +257,33 @@ video-streaming-service/
 ├── .env
 └── README.md
 ```
+
+## Testing
+
+The project includes comprehensive unit and integration tests with Vitest.
+
+### Unit Tests
+
+- **`gpuDetector`** – GPU detection, HEVC support check, and fallback logic
+- **`hlsGenerator`** – Pipeline execution, progress stages, FFmpeg arguments, and error handling
+- **`playlistGenerator`** – Master playlist generation with codec variants, CODECS attributes, and bandwidth adjustments
+- **`thumbnailGenerator`** – Sprite sheet creation, VTT generation, and individual thumbnail extraction
+- **`videoInfo`** – Metadata extraction, framerate parsing, GOP size calculation, and duration formatting
+
+### Integration Tests
+
+- API endpoints (`/api/upload`, `/api/events`, `/api/videos`, `/api/stream`, etc.)
+- File serving (`.m4s`, `.mp4`, `.vtt`, `.m3u8`)
+- Error handling and validation
+- SSE (Server-Sent Events) progress streaming
+
+### Run Tests
+
+```bash
+cd backend
+npm test
+```
+
 
 ## License
 
