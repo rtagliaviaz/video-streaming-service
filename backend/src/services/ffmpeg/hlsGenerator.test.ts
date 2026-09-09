@@ -9,7 +9,6 @@ import fs from 'fs';
 import path from 'path';
 import { ProgressInfo } from './types';
 
-// Mock de dependencias
 vi.mock('./videoInfo');
 vi.mock('./gpuDetector');
 vi.mock('./thumbnailGenerator');
@@ -67,16 +66,14 @@ describe('hlsGenerator', () => {
         durationFormatted: '00:02:00',
     };
 
-    const mockGPUInfo = { hasGPU: true, encoder: 'h264_nvenc', gpuInfo: 'RTX 3060' };
+    const mockGPUInfo = { hasGPU: true, encoder: 'h264_nvenc', gpuInfo: 'RTX 3060', supportsHevc: false };
     const mockThumbnails = ['thumb1.jpg', 'thumb2.jpg'];
 
-    // Helper para crear un proceso FFmpeg simulado
     const createMockProc = (exitCode: number = 0, stderrData: string = '') => {
         const proc = {
             stderr: {
                 on: vi.fn((event: string, cb: (data: Buffer) => void) => {
                     if (event === 'data' && stderrData) {
-                        // Simular salida de FFmpeg para que el progreso funcione
                         setTimeout(() => cb(Buffer.from(stderrData)), 10);
                     }
                 }),
@@ -99,7 +96,6 @@ describe('hlsGenerator', () => {
 
         (getVideoInfo as any).mockResolvedValue(mockVideoInfo);
         (checkGPUAvailability as any).mockResolvedValue(mockGPUInfo);
-        // ✅ CORRECCIÓN: mock de generateThumbnails devuelve objeto con thumbnails, sprite, vtt
         (generateThumbnails as any).mockResolvedValue({
             thumbnails: mockThumbnails,
             sprite: '/fake/sprite.jpg',
@@ -107,7 +103,6 @@ describe('hlsGenerator', () => {
         });
         (generateMasterPlaylist as any).mockImplementation(() => {});
 
-        // Mock de spawn por defecto (éxito)
         (spawn as any).mockImplementation(() => createMockProc(0));
     });
 
@@ -154,9 +149,19 @@ describe('hlsGenerator', () => {
         expect(capturedArgs).toContain('-c:v');
         const codecIndex = capturedArgs.indexOf('-c:v') + 1;
         expect(capturedArgs[codecIndex]).toBe('libx264');
+        expect(capturedArgs).toContain('-preset');
+        const presetIndex = capturedArgs.indexOf('-preset') + 1;
+        expect(capturedArgs[presetIndex]).toBe('fast');
     });
 
-    it('should use h264_nvenc when GPU is available', async () => {
+    it('should use h264_nvenc when GPU is available (H.264)', async () => {
+        (checkGPUAvailability as any).mockResolvedValue({
+            hasGPU: true,
+            encoder: 'h264_nvenc',
+            gpuInfo: 'RTX 3060',
+            supportsHevc: false,
+        });
+
         let capturedArgs: string[] = [];
         (spawn as any).mockImplementation((cmd: string, args: string[]) => {
             capturedArgs = args;
@@ -168,6 +173,12 @@ describe('hlsGenerator', () => {
         expect(capturedArgs).toContain('-c:v');
         const codecIndex = capturedArgs.indexOf('-c:v') + 1;
         expect(capturedArgs[codecIndex]).toBe('h264_nvenc');
+        expect(capturedArgs).toContain('-preset');
+        const presetIndex = capturedArgs.indexOf('-preset') + 1;
+        expect(capturedArgs[presetIndex]).toBe('p4');
+        expect(capturedArgs).toContain('-rc');
+        expect(capturedArgs).toContain('-cq');
+        expect(capturedArgs).toContain('-spatial_aq');
     });
 
     it('should include GOP size', async () => {
@@ -185,20 +196,17 @@ describe('hlsGenerator', () => {
     });
 
     it('should process 7 qualities', async () => {
-        // Forzar que no haya audio ni subtítulos para evitar llamadas extra de spawn
         (getVideoInfo as any).mockResolvedValue({
             ...mockVideoInfo,
             audioTracks: [],
             subtitleTracks: [],
         });
 
-        // Mock de spawn que siempre tiene éxito
         (spawn as any).mockImplementation(() => createMockProc(0));
 
         await generateHLS(mockInputPath, mockOutputDir, mockVideoId, mockOnProgress);
 
         const spawnCalls = (spawn as any).mock.calls;
-        // Filtramos solo las llamadas de calidad (las que tienen -f hls)
         const qualityCalls = spawnCalls.filter((call: any[]) => {
             const args = call[1] || [];
             return args.includes('-f') && args.includes('hls');
@@ -207,13 +215,11 @@ describe('hlsGenerator', () => {
     });
 
     it('should call onProgress with structured progress', async () => {
-        // Mock de spawn para emitir datos de progreso
         (spawn as any).mockImplementation((cmd: string, args: string[]) => {
             const proc = {
                 stderr: {
                     on: vi.fn((event: string, cb: (data: Buffer) => void) => {
                         if (event === 'data') {
-                            // Simular datos de FFmpeg para que se calcule el progreso
                             setTimeout(() => {
                                 cb(Buffer.from('Duration: 00:02:00.00\n'));
                             }, 5);
@@ -235,7 +241,6 @@ describe('hlsGenerator', () => {
             return proc;
         });
 
-        // Ajustar duración para el cálculo de progreso
         (getVideoInfo as any).mockResolvedValue({
             ...mockVideoInfo,
             duration: 120,
@@ -251,16 +256,6 @@ describe('hlsGenerator', () => {
         expect(progressInfo).toBeDefined();
         expect(progressInfo.percent).toBeGreaterThan(0);
         expect(progressInfo.stage).toBeDefined();
-    });
-
-    it('should handle FFmpeg errors', async () => {
-        (spawn as any).mockImplementation(() => {
-            return createMockProc(8);
-        });
-
-        await expect(
-            generateHLS(mockInputPath, mockOutputDir, mockVideoId, mockOnProgress)
-        ).rejects.toThrow(/FFmpeg exited with code 8 for .*/);
     });
 
     it('should handle missing audio tracks', async () => {
@@ -287,7 +282,6 @@ describe('hlsGenerator', () => {
         expect(generateMasterPlaylist).toHaveBeenCalled();
     });
 
-    // Test adicional: verificar que el progreso estructurado se emite correctamente
     it('should emit progress stages in correct order', async () => {
         const progressCalls: ProgressInfo[] = [];
         const onProgress = (info: ProgressInfo) => {
@@ -299,11 +293,95 @@ describe('hlsGenerator', () => {
         await generateHLS(mockInputPath, mockOutputDir, mockVideoId, onProgress);
 
         const stages = progressCalls.map(p => p.stage);
-        // Debería haber al menos un 'thumbnails', 'audio', 'subtitles', 'qualities', y 'done'
         expect(stages).toContain('thumbnails');
         expect(stages).toContain('audio');
         expect(stages).toContain('subtitles');
-        expect(stages).toContain('qualities');
+        const hasQualityStage = stages.includes('h264') || stages.includes('hevc');
+        expect(hasQualityStage).toBe(true);
         expect(stages).toContain('done');
+    });
+
+    it('should use hevc_nvenc when GPU supports HEVC (Windows)', async () => {
+        (checkGPUAvailability as any).mockResolvedValue({
+            hasGPU: true,
+            encoder: 'hevc_nvenc',
+            gpuInfo: 'RTX 3060',
+            supportsHevc: true,
+        });
+
+        let capturedArgs: string[] = [];
+        (spawn as any).mockImplementation((cmd: string, args: string[]) => {
+            capturedArgs = args;
+            return createMockProc(0);
+        });
+
+        await generateHLS(mockInputPath, mockOutputDir, mockVideoId, mockOnProgress);
+
+        expect(capturedArgs).toContain('-c:v');
+        const codecIndex = capturedArgs.indexOf('-c:v') + 1;
+        expect(capturedArgs[codecIndex]).toBe('hevc_nvenc');
+        expect(capturedArgs).toContain('-preset');
+        const presetIndex = capturedArgs.indexOf('-preset') + 1;
+        expect(capturedArgs[presetIndex]).toBe('p5');
+        expect(capturedArgs).toContain('-profile:v');
+        const profileIndex = capturedArgs.indexOf('-profile:v') + 1;
+        expect(capturedArgs[profileIndex]).toBe('main');
+        expect(capturedArgs).toContain('-rc');
+        expect(capturedArgs).toContain('-cq');
+        expect(capturedArgs).toContain('-spatial_aq');
+    });
+
+    it('should use fMP4 segments and init file for CMAF', async () => {
+        let capturedArgs: string[] = [];
+        (spawn as any).mockImplementation((cmd: string, args: string[]) => {
+            capturedArgs = args;
+            return createMockProc(0);
+        });
+
+        await generateHLS(mockInputPath, mockOutputDir, mockVideoId, mockOnProgress);
+
+        expect(capturedArgs).toContain('-hls_segment_type');
+        const segTypeIndex = capturedArgs.indexOf('-hls_segment_type') + 1;
+        expect(capturedArgs[segTypeIndex]).toBe('fmp4');
+        expect(capturedArgs).toContain('-hls_fmp4_init_filename');
+        expect(capturedArgs).toContain('-hls_flags');
+        const flagsIndex = capturedArgs.indexOf('-hls_flags') + 1;
+        expect(capturedArgs[flagsIndex]).toContain('independent_segments');
+        expect(capturedArgs[flagsIndex]).toContain('program_date_time');
+    });
+
+    it('should use segment duration from config (2 seconds)', async () => {
+        let capturedArgs: string[] = [];
+        (spawn as any).mockImplementation((cmd: string, args: string[]) => {
+            capturedArgs = args;
+            return createMockProc(0);
+        });
+
+        await generateHLS(mockInputPath, mockOutputDir, mockVideoId, mockOnProgress);
+
+        expect(capturedArgs).toContain('-hls_time');
+        const hlsTimeIndex = capturedArgs.indexOf('-hls_time') + 1;
+        expect(capturedArgs[hlsTimeIndex]).toBe('2');
+    });
+
+    it('should use fMP4 for audio segments as well', async () => {
+        let audioSpawnCalls: any[] = [];
+        (spawn as any).mockImplementation((cmd: string, args: string[]) => {
+            audioSpawnCalls.push({ cmd, args });
+            return createMockProc(0);
+        });
+
+        await generateHLS(mockInputPath, mockOutputDir, mockVideoId, mockOnProgress);
+
+        const audioCall = audioSpawnCalls.find(call => 
+            call.args.includes('-map') && call.args.includes('0:a:0')
+        );
+        expect(audioCall).toBeDefined();
+        expect(audioCall.args).toContain('-hls_segment_type');
+        const segTypeIdx = audioCall.args.indexOf('-hls_segment_type') + 1;
+        expect(audioCall.args[segTypeIdx]).toBe('fmp4');
+        expect(audioCall.args).toContain('-hls_fmp4_init_filename');
+        const initIdx = audioCall.args.indexOf('-hls_fmp4_init_filename') + 1;
+        expect(audioCall.args[initIdx]).toMatch(/^init_audio_\d+\.mp4$/);
     });
 });

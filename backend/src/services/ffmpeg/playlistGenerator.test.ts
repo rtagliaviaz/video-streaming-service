@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generateMasterPlaylist } from './playlistGenerator';
-import { QualityProfile, AudioTrack, SubtitleTrack } from './types';
+import { QualityProfile, AudioTrack, SubtitleTrack, CodecVariant } from './types';
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../../logger';
 
-//  fs con default y named exports
 vi.mock('fs', async (importOriginal) => {
     const actual = await importOriginal<typeof fs>();
     return {
@@ -29,7 +28,6 @@ vi.mock('fs', async (importOriginal) => {
     };
 });
 
-// sin importOriginal para evitar errores de tipo
 vi.mock('path', () => ({
     join: vi.fn((...args: string[]) => args.join('/')),
     dirname: vi.fn(),
@@ -71,13 +69,25 @@ describe('playlistGenerator', () => {
         { index: 1, language: 'spa', codec: 'webvtt', title: 'Spanish Subtitles', default: false },
     ];
 
+    const createCodecVariant = (codecName: string, encoder: string, qualities: QualityProfile[]): CodecVariant => ({
+        encoder,
+        codecName,
+        playlistPrefix: `playlist_${codecName}`,
+        segmentPrefix: `segment_${codecName}`,
+        initPrefix: `init_${codecName}`,
+        qualities,
+        masterPlaylist: path.join(mockOutputPath, `${codecName}.m3u8`),
+    });
+
+    const mockH264Variant = createCodecVariant('h264', 'libx264', mockQualities);
+
     beforeEach(() => {
         vi.clearAllMocks();
         (path.join as any).mockImplementation((...args: string[]) => args.join('/'));
     });
 
     it('should write the master playlist to the correct path', () => {
-        generateMasterPlaylist(mockOutputPath, mockQualities, [], []);
+        generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
         expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
         expect(fs.writeFileSync).toHaveBeenCalledWith(
             `${mockOutputPath}/index.m3u8`,
@@ -86,7 +96,7 @@ describe('playlistGenerator', () => {
     });
 
     it('should include #EXTM3U and #EXT-X-VERSION:6 headers', () => {
-        generateMasterPlaylist(mockOutputPath, mockQualities, [], []);
+        generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
         const playlist = (fs.writeFileSync as any).mock.calls[0][1];
         expect(playlist).toContain('#EXTM3U');
         expect(playlist).toContain('#EXT-X-VERSION:6');
@@ -94,7 +104,7 @@ describe('playlistGenerator', () => {
 
     describe('audio tracks', () => {
         it('should include #EXT-X-MEDIA for each audio track', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, mockAudioTracks, []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], mockAudioTracks, []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             mockAudioTracks.forEach((track, index) => {
                 const expected = `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-group",LANGUAGE="${track.language}",NAME="${track.title}",DEFAULT=${index === 0 ? 'YES' : 'NO'},AUTOSELECT=YES,URI="audio_${index}.m3u8"`;
@@ -106,50 +116,50 @@ describe('playlistGenerator', () => {
             const audioWithoutLanguage: AudioTrack[] = [
                 { index: 0, codec: 'aac', channels: 2, sampleRate: 48000 },
             ];
-            generateMasterPlaylist(mockOutputPath, mockQualities, audioWithoutLanguage, []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], audioWithoutLanguage, []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('LANGUAGE="track1"');
             expect(playlist).toContain('NAME="Audio 1"');
         });
 
         it('should include AUDIO attribute in #EXT-X-STREAM-INF when audio exists', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, mockAudioTracks, []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], mockAudioTracks, []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('AUDIO="audio-group"');
         });
 
         it('should NOT include AUDIO attribute when no audio tracks exist', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).not.toContain('AUDIO="audio-group"');
         });
 
         it('should include all qualities with audio group when audio exists', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, mockAudioTracks, []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], mockAudioTracks, []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             const sortedQualities = [...mockQualities].sort((a, b) => a.height - b.height);
             sortedQualities.forEach(quality => {
-                const expected = `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(quality.bitrate) * 1000},RESOLUTION=${quality.resolution},NAME="${quality.name}",AUDIO="audio-group",FRAME-RATE=30.000`;
+                const expected = `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(quality.bitrate) * 1000},RESOLUTION=${quality.resolution},NAME="${quality.name} (H264)",CODECS="avc1.640028",AUDIO="audio-group"`;
                 expect(playlist).toContain(expected);
-                expect(playlist).toContain(`playlist_${quality.name}.m3u8`);
+                expect(playlist).toContain(`playlist_h264_${quality.name}.m3u8`);
             });
         });
 
         it('should include all qualities without audio group when no audio exists', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             const sortedQualities = [...mockQualities].sort((a, b) => a.height - b.height);
             sortedQualities.forEach(quality => {
-                const expected = `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(quality.bitrate) * 1000},RESOLUTION=${quality.resolution},NAME="${quality.name}",FRAME-RATE=30.000`;
+                const expected = `#EXT-X-STREAM-INF:BANDWIDTH=${parseInt(quality.bitrate) * 1000},RESOLUTION=${quality.resolution},NAME="${quality.name} (H264)",CODECS="avc1.640028"`;
                 expect(playlist).toContain(expected);
-                expect(playlist).toContain(`playlist_${quality.name}.m3u8`);
+                expect(playlist).toContain(`playlist_h264_${quality.name}.m3u8`);
             });
         });
     });
 
     describe('subtitle tracks', () => {
         it('should include #EXT-X-MEDIA for each subtitle track', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], mockSubtitleTracks);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], mockSubtitleTracks);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             mockSubtitleTracks.forEach((track, index) => {
                 const isDefault = track.default ? 'YES' : 'NO';
@@ -162,20 +172,20 @@ describe('playlistGenerator', () => {
             const subtitleWithoutLanguage: SubtitleTrack[] = [
                 { index: 0, codec: 'webvtt' },
             ];
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], subtitleWithoutLanguage);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], subtitleWithoutLanguage);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('LANGUAGE="sub1"');
             expect(playlist).toContain('NAME="Subtitle 1"');
         });
 
-        it('should include subtitle section header when subtitles exist', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], mockSubtitleTracks);
+        it('should include SUBTITLES attribute in #EXT-X-STREAM-INF when subtitles exist', () => {
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], mockSubtitleTracks);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
-            expect(playlist).toContain('# === SUBTITLES (WebVTT) ===');
+            expect(playlist).toContain('SUBTITLES="subs"');
         });
 
         it('should NOT include subtitle section header when no subtitles exist', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).not.toContain('# === SUBTITLES (WebVTT) ===');
         });
@@ -188,7 +198,8 @@ describe('playlistGenerator', () => {
                 { name: '360p', resolution: '640x360', bitrate: '400', maxrate: '600', bufsize: '800', height: 360, width: 640 },
                 { name: '720p', resolution: '1280x720', bitrate: '2000', maxrate: '3000', bufsize: '4000', height: 720, width: 1280 },
             ];
-            generateMasterPlaylist(mockOutputPath, unsortedQualities, [], []);
+            const variant = createCodecVariant('h264', 'libx264', unsortedQualities);
+            generateMasterPlaylist(mockOutputPath, [variant], [], []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1] as string;
             const lines = playlist.split('\n');
             const streamInfLines = lines.filter((line: string) => line.includes('#EXT-X-STREAM-INF'));
@@ -199,49 +210,78 @@ describe('playlistGenerator', () => {
     });
 
     describe('bandwidth calculation', () => {
-        it('should calculate bandwidth as bitrate * 1000', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], []);
+        it('should calculate bandwidth as bitrate * 1000 for H.264', () => {
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             mockQualities.forEach(quality => {
                 const expectedBandwidth = parseInt(quality.bitrate) * 1000;
                 expect(playlist).toContain(`BANDWIDTH=${expectedBandwidth}`);
             });
         });
+
+        it('should adjust bandwidth for HEVC (70% of H.264)', () => {
+            const hevcVariant = createCodecVariant('hevc', 'hevc_nvenc', mockQualities);
+            generateMasterPlaylist(mockOutputPath, [hevcVariant], [], []);
+            const playlist = (fs.writeFileSync as any).mock.calls[0][1];
+            mockQualities.forEach(quality => {
+                const h264Bandwidth = parseInt(quality.bitrate) * 1000;
+                const expectedBandwidth = Math.round(h264Bandwidth * 0.7);
+                expect(playlist).toContain(`BANDWIDTH=${expectedBandwidth}`);
+            });
+        });
+
+        it('should include CODECS attribute for H.264', () => {
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], []);
+            const playlist = (fs.writeFileSync as any).mock.calls[0][1];
+            expect(playlist).toContain('CODECS="avc1.640028"');
+        });
+
+        it('should include CODECS attribute for HEVC', () => {
+            const hevcVariant = createCodecVariant('hevc', 'hevc_nvenc', mockQualities);
+            generateMasterPlaylist(mockOutputPath, [hevcVariant], [], []);
+            const playlist = (fs.writeFileSync as any).mock.calls[0][1];
+            expect(playlist).toContain('CODECS="hvc1.1.6.L123.0"');
+        });
+
+        it('should handle multiple codec variants in the same playlist', () => {
+            const hevcVariant = createCodecVariant('hevc', 'hevc_nvenc', mockQualities);
+            const variants = [mockH264Variant, hevcVariant];
+            generateMasterPlaylist(mockOutputPath, variants, [], []);
+            const playlist = (fs.writeFileSync as any).mock.calls[0][1];
+            mockQualities.forEach(quality => {
+                expect(playlist).toContain(`playlist_h264_${quality.name}.m3u8`);
+                expect(playlist).toContain(`playlist_hevc_${quality.name}.m3u8`);
+                // Verificar que HEVC tenga CODECS correcto
+                expect(playlist).toContain('CODECS="hvc1.1.6.L123.0"');
+                expect(playlist).toContain('CODECS="avc1.640028"');
+            });
+        });
     });
 
     describe('logging', () => {
-        it('should log info with quality, audio, and subtitle counts', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, mockAudioTracks, mockSubtitleTracks);
-            expect(logger.info).toHaveBeenCalledWith(
-                `Master playlist created with ${mockQualities.length} qualities, ${mockAudioTracks.length} audio tracks, ${mockSubtitleTracks.length} subtitle tracks`
-            );
+        it('should log info with codec variants, audio, and subtitle counts', () => {
+            const hevcVariant = createCodecVariant('hevc', 'hevc_nvenc', mockQualities);
+            const variants = [mockH264Variant, hevcVariant];
+            generateMasterPlaylist(mockOutputPath, variants, mockAudioTracks, mockSubtitleTracks);
+            expect(logger.info).toHaveBeenCalledWith(`Master playlist created with ${variants.length} codec variants`);
+            expect(logger.info).toHaveBeenCalledWith(`  - H264: ${mockQualities.length} qualities (encoder: libx264)`);
+            expect(logger.info).toHaveBeenCalledWith(`  - HEVC: ${mockQualities.length} qualities (encoder: hevc_nvenc)`);
+            expect(logger.info).toHaveBeenCalledWith(`  - ${mockAudioTracks.length} audio tracks, ${mockSubtitleTracks.length} subtitle tracks`);
         });
 
-        it('should log debug for each audio track', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, mockAudioTracks, []);
-            expect(logger.debug).toHaveBeenCalledTimes(mockAudioTracks.length);
-            mockAudioTracks.forEach((track, i) => {
-                expect(logger.debug).toHaveBeenCalledWith(
-                    { audioIndex: i, language: track.language, codec: track.codec },
-                    `Audio ${i + 1}: ${track.language} (${track.codec})`
-                );
-            });
+        it('should NOT log debug for audio tracks (removed from implementation)', () => {
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], mockAudioTracks, []);
+            expect(logger.debug).not.toHaveBeenCalled();
         });
 
-        it('should log debug for each subtitle track', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], mockSubtitleTracks);
-            expect(logger.debug).toHaveBeenCalledTimes(mockSubtitleTracks.length);
-            mockSubtitleTracks.forEach((track, i) => {
-                expect(logger.debug).toHaveBeenCalledWith(
-                    { subtitleIndex: i, language: track.language, codec: track.codec },
-                    `Subtitle ${i + 1}: ${track.language} (${track.codec})`
-                );
-            });
+        it('should NOT log debug for subtitle tracks (removed from implementation)', () => {
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], mockSubtitleTracks);
+            expect(logger.debug).not.toHaveBeenCalled();
         });
     });
 
     describe('edge cases', () => {
-        it('should handle empty qualities array gracefully', () => {
+        it('should handle empty codec variants array gracefully', () => {
             generateMasterPlaylist(mockOutputPath, [], [], []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('#EXTM3U');
@@ -253,7 +293,7 @@ describe('playlistGenerator', () => {
             const minimalAudio: AudioTrack[] = [
                 { index: 0, codec: 'aac', channels: 2, sampleRate: 48000 },
             ];
-            generateMasterPlaylist(mockOutputPath, mockQualities, minimalAudio, []);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], minimalAudio, []);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('LANGUAGE="track1"');
             expect(playlist).toContain('NAME="Audio 1"');
@@ -263,7 +303,7 @@ describe('playlistGenerator', () => {
             const minimalSubtitle: SubtitleTrack[] = [
                 { index: 0, codec: 'webvtt' },
             ];
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], minimalSubtitle);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], minimalSubtitle);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('LANGUAGE="sub1"');
             expect(playlist).toContain('NAME="Subtitle 1"');
@@ -273,7 +313,7 @@ describe('playlistGenerator', () => {
             const nonDefaultSubtitle: SubtitleTrack[] = [
                 { index: 0, language: 'eng', codec: 'webvtt', title: 'English', default: false },
             ];
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], nonDefaultSubtitle);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], nonDefaultSubtitle);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('DEFAULT=NO');
         });
@@ -282,18 +322,18 @@ describe('playlistGenerator', () => {
             const defaultSubtitle: SubtitleTrack[] = [
                 { index: 0, language: 'eng', codec: 'webvtt', title: 'English', default: true },
             ];
-            generateMasterPlaylist(mockOutputPath, mockQualities, [], defaultSubtitle);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], [], defaultSubtitle);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('DEFAULT=YES');
         });
 
         it('should include both audio and subtitles when both exist', () => {
-            generateMasterPlaylist(mockOutputPath, mockQualities, mockAudioTracks, mockSubtitleTracks);
+            generateMasterPlaylist(mockOutputPath, [mockH264Variant], mockAudioTracks, mockSubtitleTracks);
             const playlist = (fs.writeFileSync as any).mock.calls[0][1];
             expect(playlist).toContain('TYPE=AUDIO');
             expect(playlist).toContain('TYPE=SUBTITLES');
             expect(playlist).toContain('AUDIO="audio-group"');
-            expect(playlist).toContain('GROUP-ID="subs"');
+            expect(playlist).toContain('SUBTITLES="subs"');
         });
     });
 });
