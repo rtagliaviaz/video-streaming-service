@@ -19,6 +19,10 @@ services:
       - PORT=3001
       - VIDEO_FOLDER_PATH=/app/uploads
       - OUTPUT_FOLDER_PATH=/app/hls
+      - REDIS_HOST=redis 
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
     restart: unless-stopped
 
   frontend:
