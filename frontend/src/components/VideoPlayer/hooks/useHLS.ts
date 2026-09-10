@@ -1,3 +1,4 @@
+// frontend/src/hooks/useHLS.ts
 import { useEffect, useRef, useCallback, useState } from 'react';
 import Hls from 'hls.js';
 import type { Quality, AudioTrack, SubtitleTrack } from '../types';
@@ -27,16 +28,16 @@ export const useHLS = ({
 }: UseHLSProps) => {
     const internalHlsRef = useRef<Hls | null>(null);
     const hlsRef = externalHlsRef || internalHlsRef;
-    
+
     const [currentLevel, setCurrentLevel] = useState<number>(-1);
-    
+
     const onQualitiesLoadedRef = useRef(onQualitiesLoaded);
     const onQualityChangedRef = useRef(onQualityChanged);
     const onLoadingChangeRef = useRef(onLoadingChange);
     const onErrorRef = useRef(onError);
     const onAudioTracksLoadedRef = useRef(onAudioTracksLoaded);
     const onSubtitleTracksLoadedRef = useRef(onSubtitleTracksLoaded);
-    
+
     useEffect(() => {
         onQualitiesLoadedRef.current = onQualitiesLoaded;
         onQualityChangedRef.current = onQualityChanged;
@@ -46,11 +47,14 @@ export const useHLS = ({
         onSubtitleTracksLoadedRef.current = onSubtitleTracksLoaded;
     });
 
-    const changeQuality = useCallback((level: number) => {
-        if (!hlsRef.current) return;
-        hlsRef.current.currentLevel = level;
-        setCurrentLevel(level);
-    }, [hlsRef]);
+    const changeQuality = useCallback(
+        (level: number) => {
+            if (!hlsRef.current) return;
+            hlsRef.current.currentLevel = level;
+            setCurrentLevel(level);
+        },
+        [hlsRef]
+    );
 
     const cleanup = useCallback(() => {
         if (hlsRef.current) {
@@ -95,18 +99,18 @@ export const useHLS = ({
             hls.loadSource(streamUrl);
             hls.attachMedia(video);
 
-            const parseQualities = (levels: any[]): Quality[] => {
-                return levels.map((level, index) => {
+            const parseAndGroupQualities = (levels: any[]): Quality[] => {
+                const grouped = new Map<
+                    number,
+                    { level: number; height: number; bitrate: number; codec?: string }
+                >();
+
+                levels.forEach((level, index) => {
                     let height = level.height || 0;
-                    let name = '';
-                    
                     if (!height && level.name) {
                         const match = level.name.match(/(\d+)p/);
-                        if (match) {
-                            height = parseInt(match[1]);
-                        }
+                        if (match) height = parseInt(match[1]);
                     }
-                    
                     if (!height && level.bitrate) {
                         const bitrate = level.bitrate;
                         if (bitrate <= 200000) height = 144;
@@ -118,62 +122,72 @@ export const useHLS = ({
                         else if (bitrate <= 10000000) height = 1440;
                         else height = 2160;
                     }
-                    
-                    if (height) {
-                        name = `${height}p`;
-                    } else if (level.name) {
-                        name = level.name;
-                    } else {
-                        name = `${Math.round(level.bitrate / 1000)}kbps`;
+
+                    if (height === 0) return;
+
+                    const existing = grouped.get(height);
+                    if (!existing || level.bitrate < existing.bitrate) {
+                        grouped.set(height, {
+                            level: index,
+                            height,
+                            bitrate: level.bitrate,
+                            codec: level.codec,
+                        });
                     }
-                    
-                    return {
-                        height,
-                        name,
-                        level: index,
-                        bitrate: level.bitrate,
-                    };
                 });
+
+                return Array.from(grouped.values())
+                    .sort((a, b) => a.height - b.height)
+                    .map(({ level, height, bitrate }) => ({
+                        height,
+                        name: `${height}p`,
+                        level, 
+                        bitrate,
+                    }));
             };
 
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 console.log('📋 Manifest parsed');
-                const qualities = parseQualities(hls.levels);
-                console.log('📊 Available qualities:', qualities);
+                const qualities = parseAndGroupQualities(hls.levels);
+                console.log('📊 Unique qualities (grouped):', qualities);
                 onQualitiesLoadedRef.current(qualities);
                 onLoadingChangeRef.current(false);
 
-                // audio tracks detector
-                console.log('🔍 Audio tracks en HLS:', hls.audioTracks);
-                
+                console.log('🔍 Audio tracks in HLS:', hls.audioTracks);
+
                 if (hls.audioTracks && hls.audioTracks.length > 0) {
-                    const audioTracks: AudioTrack[] = hls.audioTracks.map((track: any, index: number) => ({
-                        index: index,
-                        language: track.name || track.lang || `Track ${index + 1}`,
-                        codec: 'aac',
-                        channels: 2,
-                        sampleRate: 44100,
-                        title: track.name || `Audio ${index + 1}`
-                    }));
-                    console.log('🎵 Audio tracks detectadas:', audioTracks);
+                    const audioTracks: AudioTrack[] = hls.audioTracks.map(
+                        (track: any, index: number) => ({
+                            index: index,
+                            language: track.name || track.lang || `Track ${index + 1}`,
+                            codec: 'aac',
+                            channels: 2,
+                            sampleRate: 44100,
+                            title: track.name || `Audio ${index + 1}`,
+                        })
+                    );
+                    console.log('🎵 Audio tracks detected:', audioTracks);
                     onAudioTracksLoadedRef.current?.(audioTracks);
-                    
+
                     const preferredIndex = 0;
-                    console.log(`🎵 Seleccionando audio track ${preferredIndex} (${audioTracks[preferredIndex]?.language})`);
-                    
+                    console.log(
+                        `🎵 Selecting audio track ${preferredIndex} (${audioTracks[preferredIndex]?.language})`
+                    );
+
                     if (hls.audioTrack !== undefined) {
                         hls.audioTrack = preferredIndex;
-                        console.log(`✅ HLS audio track forzado a: ${preferredIndex}`);
+                        console.log(`✅ HLS audio track forced to: ${preferredIndex}`);
                     }
                 } else {
-                    console.warn('⚠️ No se detectaron pistas de audio en HLS, forzando pista 0');
+                    console.warn('⚠️ No audio tracks detected in HLS, forcing track 0');
                     if (hls.audioTrack !== undefined) {
                         hls.audioTrack = 0;
-                        console.log('✅ HLS audio track forzado a: 0');
+                        console.log('✅ HLS audio track forced to: 0');
                     }
                 }
 
-                video.play()
+                video
+                    .play()
                     .then(() => console.log('▶️ Playback started'))
                     .catch((err) => console.log('⏸️ Autoplay blocked:', err));
             });
@@ -181,20 +195,23 @@ export const useHLS = ({
             hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => {
                 console.log('🎵 Audio tracks updated:', data);
                 if (data.audioTracks && data.audioTracks.length > 0) {
-                    const audioTracks: AudioTrack[] = data.audioTracks.map((track: any, index: number) => ({
-                        index: index,
-                        language: track.name || track.lang || `Track ${index + 1}`,
-                        codec: 'aac',
-                        channels: 2,
-                        sampleRate: 44100,
-                        title: track.name || `Audio ${index + 1}`
-                    }));
+                    const audioTracks: AudioTrack[] = data.audioTracks.map(
+                        (track: any, index: number) => ({
+                            index: index,
+                            language: track.name || track.lang || `Track ${index + 1}`,
+                            codec: 'aac',
+                            channels: 2,
+                            sampleRate: 44100,
+                            title: track.name || `Audio ${index + 1}`,
+                        })
+                    );
                     onAudioTracksLoadedRef.current?.(audioTracks);
-                    
-                    // forced to start with first audio track
+
                     if (hlsRef.current && hlsRef.current.audioTrack !== undefined) {
                         hlsRef.current.audioTrack = 0;
-                        console.log('✅ HLS audio track forzado a: 0 (desde AUDIO_TRACKS_UPDATED)');
+                        console.log(
+                            '✅ HLS audio track forced to: 0 (from AUDIO_TRACKS_UPDATED)'
+                        );
                     }
                 }
             });
@@ -208,20 +225,20 @@ export const useHLS = ({
                 if (level) {
                     let height = level.height || 0;
                     let name = '';
-                    
+
                     if (!height && level.name) {
                         const match = level.name.match(/(\d+)p/);
                         if (match) {
                             height = parseInt(match[1]);
                         }
                     }
-                    
+
                     if (height) {
                         name = `${height}p`;
                     } else {
                         name = `${Math.round(level.bitrate / 1000)}kbps`;
                     }
-                    
+
                     console.log(`📊 Switched to quality: ${name}`);
                     onQualityChangedRef.current(name);
                 }
@@ -229,13 +246,13 @@ export const useHLS = ({
 
             hls.on(Hls.Events.LEVELS_UPDATED, (_event, data) => {
                 console.log('🔄 Levels updated:', data.levels.length);
-                const qualities = parseQualities(data.levels);
+                const qualities = parseAndGroupQualities(data.levels);
                 onQualitiesLoadedRef.current(qualities);
             });
 
             hls.on(Hls.Events.ERROR, (_event, data) => {
                 console.error('❌ HLS Error:', data);
-                
+
                 if (data.fatal) {
                     switch (data.type) {
                         case Hls.ErrorTypes.NETWORK_ERROR:
@@ -247,7 +264,9 @@ export const useHLS = ({
                             hls.recoverMediaError();
                             break;
                         default:
-                            onErrorRef.current('Fatal error loading video. Please try again.');
+                            onErrorRef.current(
+                                'Fatal error loading video. Please try again.'
+                            );
                             onLoadingChangeRef.current(false);
                             break;
                     }
@@ -260,7 +279,8 @@ export const useHLS = ({
             video.src = streamUrl;
             video.addEventListener('loadedmetadata', () => {
                 onLoadingChangeRef.current(false);
-                video.play()
+                video
+                    .play()
                     .then(() => console.log('▶️ Playback started (Safari)'))
                     .catch(() => console.log('⏸️ Autoplay blocked (Safari)'));
             });
