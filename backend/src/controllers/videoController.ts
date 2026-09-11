@@ -270,12 +270,20 @@ export const videoController = {
             return res.status(404).json({ error: 'File not found' });
         }
 
+        const headers: Record<string, string> = {};
+
         if (thumbnail.endsWith('.vtt')) {
-            res.setHeader('Content-Type', 'text/vtt');
-            res.setHeader('Cache-Control', 'no-cache');
+            headers['Content-Type'] = 'text/vtt';
+            headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+        } else if (thumbnail.endsWith('.jpg') || thumbnail.endsWith('.jpeg')) {
+            headers['Content-Type'] = 'image/jpeg';
+            headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+        } else if (thumbnail.endsWith('.png')) {
+            headers['Content-Type'] = 'image/png';
+            headers['Cache-Control'] = 'public, max-age=31536000, immutable';
         }
 
-        res.sendFile(thumbPath);
+        res.sendFile(thumbPath, { headers });
     },
 
     getQueueStatus: async (req: Request, res: Response) => {
