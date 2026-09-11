@@ -7,10 +7,8 @@ interface FileDropZoneProps {
     onDrop: (e: React.DragEvent) => void;
     onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
     disabled: boolean;
-    file: File | null;
+    fileCount: number;
     formatFileSize: (bytes: number) => string;
-    uploading: boolean;
-    isProcessing: boolean;
 }
 
 export const FileDropZone: React.FC<FileDropZoneProps> = ({
@@ -20,30 +18,29 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({
     onDrop,
     onFileChange,
     disabled,
-    file,
-    formatFileSize,
-    uploading,
-    isProcessing,
+    fileCount,
 }) => {
     return (
-        <div 
+        <div
             className={`card upload-zone ${isDragging ? 'dragging' : ''}`}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
         >
-            <h3>📤 Upload Video</h3>
-            
-            {file && !uploading && !isProcessing && (
+            <h3>📤 Upload Videos</h3>
+
+            {fileCount > 0 && (
                 <div className="file-info">
-                    <span className="name">📄 {file.name}</span>
-                    <span className="size">{formatFileSize(file.size)}</span>
+                    <span className="name">
+                        📄 {fileCount} file{fileCount > 1 ? 's' : ''} selected
+                    </span>
                 </div>
             )}
 
             <input
                 type="file"
                 accept="video/*"
+                multiple
                 onChange={onFileChange}
                 disabled={disabled}
                 style={{ marginBottom: '0.75rem' }}

@@ -21,10 +21,17 @@ const getOutputFolder = (): string => {
     return path.join(__dirname, '../hls');
 };
 
+const getRedisConfig = () => ({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || undefined,
+});
+
 export const config = {
     videoFolder: getVideoFolder(),
     outputFolder: getOutputFolder(),
     port: parseInt(process.env.PORT || '3001', 10),
+    redis: getRedisConfig(),
 };
 
 export const ensureDirectories = () => {

@@ -2,28 +2,27 @@ import React, { useState } from 'react';
 import type { VideoUploaderProps } from './types';
 import { useVideoUpload } from './hooks/useVideoUpload';
 import { FileDropZone } from './components/FileDropZone';
-import { ProgressBar } from './components/ProgressBar';
 import { UploadStatus } from './components/UploadStatus';
-import { ProcessingDetails } from './components/ProcessingDetails';
+import { UploadList } from './components/UploadList';
 import { QUALITY_OPTIONS } from '../../constants';
 
 export const VideoUploader: React.FC<VideoUploaderProps> = ({ onUploadSuccess }) => {
     const [isDragging, setIsDragging] = useState(false);
 
     const {
-        file,
-        uploading,
-        uploadProgress,
+        items,
         error,
-        isProcessing,
-        progressInfo,
         isComplete,
+        successMessage,
         selectedQualities,
-        selectFile,
-        uploadFile,
+        addFiles,
+        removeItem,
+        uploadAll,
         cancelUpload,
         toggleQuality,
         formatFileSize,
+        hasPending,
+        isUploading,
     } = useVideoUpload({ onUploadSuccess });
 
     const handleDragOver = (e: React.DragEvent) => {
@@ -39,18 +38,19 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ onUploadSuccess })
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();
         setIsDragging(false);
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            selectFile(e.dataTransfer.files[0]);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            addFiles(Array.from(e.dataTransfer.files));
         }
     };
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            selectFile(e.target.files[0]);
+        if (e.target.files && e.target.files.length > 0) {
+            addFiles(Array.from(e.target.files));
+            e.target.value = '';
         }
     };
 
-    const isDisabled = uploading || isProcessing || isComplete;
+    const isDisabled = isUploading;
 
     return (
         <div>
@@ -61,10 +61,8 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ onUploadSuccess })
                 onDrop={handleDrop}
                 onFileChange={handleFileChange}
                 disabled={isDisabled}
-                file={file}
+                fileCount={items.length}
                 formatFileSize={formatFileSize}
-                uploading={uploading}
-                isProcessing={isProcessing}
             />
 
             <div style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>
@@ -102,35 +100,26 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({ onUploadSuccess })
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
                 <button
                     className="primary"
-                    onClick={uploadFile}
-                    disabled={!file || isDisabled}
+                    onClick={uploadAll}
+                    disabled={!hasPending || isDisabled}
                 >
-                    {uploading ? '⏳ Uploading...' :
-                     isProcessing ? '⚙️ Processing...' :
-                     isComplete ? '✅ Done' :
-                     '🚀 Upload'}
+                    {isUploading ? '⏳ Uploading...' : `🚀 Upload ${items.filter(i => !i.jobId).length || ''}`}
                 </button>
 
-                {file && !uploading && !isProcessing && !isComplete && (
-                    <button onClick={cancelUpload}>❌ Cancel</button>
+                {items.some((it) => !it.jobId && !it.uploading) && (
+                    <button onClick={cancelUpload}>❌ Clear</button>
                 )}
             </div>
 
-            {uploadProgress > 0 && uploadProgress < 100 && (
-                <ProgressBar
-                    label="Upload"
-                    icon="📤"
-                    progress={uploadProgress}
-                    color="upload"
-                />
-            )}
-
-            {isProcessing && (
-                <ProcessingDetails progressInfo={progressInfo} />
-            )}
+            <UploadList
+                items={items}
+                formatFileSize={formatFileSize}
+                onRemove={removeItem}
+            />
 
             <UploadStatus
                 isComplete={isComplete}
+                successMessage={successMessage}
                 error={error}
                 onRetry={() => {
                     window.location.reload();

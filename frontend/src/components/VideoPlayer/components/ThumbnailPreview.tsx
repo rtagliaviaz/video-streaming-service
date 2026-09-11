@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { useThumbnailVTT } from '../../../hooks/useThumbnailVTT';
-import type { ThumbnailTile } from '../../../hooks/useThumbnailVTT';
+import { useThumbnailVTT } from '../hooks/useThumbnailVTT';
+import type { ThumbnailTile } from '../hooks/useThumbnailVTT';
 
 interface ThumbnailPreviewProps {
   videoId: string;

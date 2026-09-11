@@ -82,11 +82,17 @@ function runFFmpegWithProgress(
     args: string[],
     isWindows: boolean,
     qualityName: string,
-    onQualityProgress: (percent: number) => void
+    onQualityProgress: (percent: number) => void,
+    signal?: AbortSignal
 ): Promise<void> {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            return reject(new Error('CANCELLED'));
+        }
+
         const proc = spawn('ffmpeg', args, {
             windowsHide: true,
+            signal,
         });
 
         let duration = 0;
@@ -124,7 +130,10 @@ function runFFmpegWithProgress(
             }
         });
 
-        proc.on('close', (code) => {
+        proc.on('close', (code, signalName) => {
+            if (signal?.aborted || signalName === 'SIGTERM') {
+                return reject(new Error('CANCELLED'));
+            }
             if (code === 0) {
                 onQualityProgress(100);
                 logger.info(`${qualityName} completed`);
@@ -135,7 +144,10 @@ function runFFmpegWithProgress(
             }
         });
 
-        proc.on('error', (err) => {
+        proc.on('error', (err: any) => {
+            if (err?.name === 'AbortError' || signal?.aborted) {
+                return reject(new Error('CANCELLED'));
+            }
             const errorMessage = err instanceof Error ? err.message : String(err);
             logger.error({ quality: qualityName, error: errorMessage }, `FFmpeg error for ${qualityName}`);
             reject(err);
@@ -147,12 +159,15 @@ async function extractAudioTracks(
     inputPath: string,
     outputPath: string,
     audioTracks: any[],
-    audioBitrate: string
+    audioBitrate: string,
+    signal?: AbortSignal
 ): Promise<void> {
     if (audioTracks.length === 0) return;
 
     logger.info(`Generating ${audioTracks.length} audio playlists...`);
     for (let i = 0; i < audioTracks.length; i++) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+
         const audioPlaylist = `audio_${i}.m3u8`;
         const audioOutput = path.join(outputPath, audioPlaylist);
         const segmentTemplate = path.join(outputPath, `audio_${i}_%03d.m4s`);
@@ -178,8 +193,11 @@ async function extractAudioTracks(
         }
 
         await new Promise((resolve, reject) => {
-            const proc = spawn('ffmpeg', args, { windowsHide: true });
-            proc.on('close', (code) => {
+            const proc = spawn('ffmpeg', args, { windowsHide: true, signal });
+            proc.on('close', (code, signalName) => {
+                if (signal?.aborted || signalName === 'SIGTERM') {
+                    return reject(new Error('CANCELLED'));
+                }
                 if (code === 0) {
                     logger.info(`Audio ${i + 1} (${audioTracks[i].language || 'track'}) generated`);
                     resolve(null);
@@ -188,7 +206,10 @@ async function extractAudioTracks(
                     reject(new Error(`Audio ${i} failed with code ${code}`));
                 }
             });
-            proc.on('error', (err) => {
+            proc.on('error', (err: any) => {
+                if (err?.name === 'AbortError' || signal?.aborted) {
+                    return reject(new Error('CANCELLED'));
+                }
                 const errorMessage = err instanceof Error ? err.message : String(err);
                 logger.error({ audioIndex: i, error: errorMessage }, `Audio ${i} error`);
                 reject(err);
@@ -200,12 +221,15 @@ async function extractAudioTracks(
 async function extractSubtitles(
     inputPath: string,
     outputPath: string,
-    subtitleTracks: any[]
+    subtitleTracks: any[],
+    signal?: AbortSignal
 ): Promise<void> {
     if (subtitleTracks.length === 0) return;
 
     logger.info({ trackCount: subtitleTracks.length }, 'Generating WebVTT subtitle files...');
     for (let i = 0; i < subtitleTracks.length; i++) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+
         const lang = subtitleTracks[i].language || `sub${i}`;
         const vttFile = `subtitle_${i}.vtt`;
         const vttPath = path.join(outputPath, vttFile);
@@ -218,8 +242,11 @@ async function extractSubtitles(
         ];
 
         await new Promise((resolve, reject) => {
-            const proc = spawn('ffmpeg', args, { windowsHide: true });
-            proc.on('close', (code) => {
+            const proc = spawn('ffmpeg', args, { windowsHide: true, signal });
+            proc.on('close', (code, signalName) => {
+                if (signal?.aborted || signalName === 'SIGTERM') {
+                    return reject(new Error('CANCELLED'));
+                }
                 if (code === 0) {
                     logger.info(`Subtitle ${i + 1} (${lang}) generated`);
                     resolve(null);
@@ -228,7 +255,10 @@ async function extractSubtitles(
                     reject(new Error(`Subtitle ${i} failed with code ${code}`));
                 }
             });
-            proc.on('error', (err) => {
+            proc.on('error', (err: any) => {
+                if (err?.name === 'AbortError' || signal?.aborted) {
+                    return reject(new Error('CANCELLED'));
+                }
                 const errorMessage = err instanceof Error ? err.message : String(err);
                 logger.error({ subtitleIndex: i, error: errorMessage }, `Subtitle ${i} error`);
                 reject(err);
@@ -242,12 +272,13 @@ export const generateHLS = async (
     outputDir: string,
     videoId: string,
     onProgress: (info: ProgressInfo) => void,
-    selectedQualityNames?: string[] | null 
+    selectedQualityNames?: string[] | null,
+    signal?: AbortSignal
 ): Promise<HLSResult> => {
     const qualities = selectedQualityNames && selectedQualityNames.length > 0
         ? QUALITY_PROFILES.filter(q => selectedQualityNames.includes(q.name))
         : QUALITY_PROFILES;
-        
+
     const videoInfo = await getVideoInfo(inputPath);
     logger.info(
         {
@@ -286,149 +317,150 @@ export const generateHLS = async (
 
     logger.info(`OS: ${process.platform} (${isWindows ? 'Windows' : 'Linux/Docker'})`);
 
-    return new Promise(async (resolve, reject) => {
-        const outputPath = path.join(outputDir, videoId);
-        if (!fs.existsSync(outputPath)) {
-            fs.mkdirSync(outputPath, { recursive: true });
-            logger.info(`Output directory created: ${outputPath}`);
-        }
+    const outputPath = path.join(outputDir, videoId);
+    if (!fs.existsSync(outputPath)) {
+        fs.mkdirSync(outputPath, { recursive: true });
+        logger.info(`Output directory created: ${outputPath}`);
+    }
 
-        const emitProgress = (stage: ProgressInfo['stage'], percent: number, details?: ProgressInfo['details']) => {
-            onProgress({
-                percent: Math.min(100, Math.round(percent)),
-                stage,
-                details: details || {},
-            });
-        };
+    const emitProgress = (stage: ProgressInfo['stage'], percent: number, details?: ProgressInfo['details']) => {
+        onProgress({
+            percent: Math.min(100, Math.round(percent)),
+            stage,
+            details: details || {},
+        });
+    };
 
+    let thumbResult = { thumbnails: [] as string[], sprite: '', vtt: '' };
+    try {
+        if (signal?.aborted) throw new Error('CANCELLED');
+        emitProgress('thumbnails', 2);
+        thumbResult = await generateThumbnails(inputPath, outputDir, videoId, 40);
+        emitProgress('thumbnails', 10, {
+            thumbnailsGenerated: thumbResult.thumbnails.length,
+            totalThumbnails: 40,
+            spriteGenerated: !!thumbResult.sprite,
+        });
+        logger.info(`Thumbnails generated: ${thumbResult.thumbnails.length} individual, sprite: ${thumbResult.sprite}, vtt: ${thumbResult.vtt}`);
+    } catch (err) {
+        if ((err as Error).message === 'CANCELLED') throw err;
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logger.warn({ error: errorMessage }, 'Error generating thumbnails');
+    }
 
-        let thumbResult = { thumbnails: [] as string[], sprite: '', vtt: '' };
-        try {
-            emitProgress('thumbnails', 2);
-            thumbResult = await generateThumbnails(inputPath, outputDir, videoId, 40);
-            emitProgress('thumbnails', 10, {
-                thumbnailsGenerated: thumbResult.thumbnails.length,
-                totalThumbnails: 40,
-                spriteGenerated: !!thumbResult.sprite,
-            });
-            logger.info(`Thumbnails generated: ${thumbResult.thumbnails.length} individual, sprite: ${thumbResult.sprite}, vtt: ${thumbResult.vtt}`);
-        } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            logger.warn({ error: errorMessage }, 'Error generating thumbnails');
-        }
+    try {
+        emitProgress('audio', 12);
+        await extractAudioTracks(inputPath, outputPath, videoInfo.audioTracks, HLS_CONFIG.audioBitrate, signal);
+        emitProgress('audio', 15, {
+            audioTracksExtracted: videoInfo.audioTracks.length,
+            totalAudioTracks: videoInfo.audioTracks.length,
+        });
+    } catch (err) {
+        if ((err as Error).message === 'CANCELLED') throw err;
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logger.warn({ error: errorMessage }, 'Error extracting audio');
+    }
 
-        try {
-            emitProgress('audio', 12);
-            await extractAudioTracks(inputPath, outputPath, videoInfo.audioTracks, HLS_CONFIG.audioBitrate);
-            emitProgress('audio', 15, {
-                audioTracksExtracted: videoInfo.audioTracks.length,
-                totalAudioTracks: videoInfo.audioTracks.length,
-            });
-        } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            logger.warn({ error: errorMessage }, 'Error extracting audio');
-        }
+    try {
+        emitProgress('subtitles', 17);
+        await extractSubtitles(inputPath, outputPath, videoInfo.subtitleTracks, signal);
+        emitProgress('subtitles', 20, {
+            subtitlesExtracted: videoInfo.subtitleTracks.length,
+            totalSubtitles: videoInfo.subtitleTracks.length,
+        });
+    } catch (err) {
+        if ((err as Error).message === 'CANCELLED') throw err;
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logger.warn({ error: errorMessage }, 'Error extracting subtitles');
+    }
 
-        try {
-            emitProgress('subtitles', 17);
-            await extractSubtitles(inputPath, outputPath, videoInfo.subtitleTracks);
-            emitProgress('subtitles', 20, {
-                subtitlesExtracted: videoInfo.subtitleTracks.length,
-                totalSubtitles: videoInfo.subtitleTracks.length,
-            });
-        } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            logger.warn({ error: errorMessage }, 'Error extracting subtitles');
-        }
+    const gopSize = videoInfo.gopSize || 48;
+    const codecVariants: CodecVariant[] = [];
 
-        const gopSize = videoInfo.gopSize || 48;
-        const codecVariants: CodecVariant[] = [];
+    logger.info(`Processing ${qualities.length} H.264 qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
+    const h264Qualities = await processCodecQualities(
+        inputPath,
+        outputPath,
+        qualities,
+        h264Encoder,
+        gopSize,
+        isWindows,
+        'h264',
+        (percent, details) => {
+            emitProgress('h264', 20 + (percent / 100) * 40, details);
+        },
+        signal
+    );
 
+    codecVariants.push({
+        encoder: h264Encoder,
+        codecName: 'h264',
+        playlistPrefix: 'playlist_h264',
+        segmentPrefix: 'segment_h264',
+        initPrefix: 'init_h264',
+        qualities: h264Qualities,
+        masterPlaylist: path.join(outputPath, 'h264.m3u8'),
+    });
 
-        logger.info(`Processing ${qualities.length} H.264 qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
-        const h264Qualities = await processCodecQualities(
+    if (generateHevc) {
+        logger.info(`Processing ${qualities.length} HEVC qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
+        const hevcQualities = await processCodecQualities(
             inputPath,
             outputPath,
             qualities,
-            h264Encoder,
+            'hevc_nvenc',
             gopSize,
             isWindows,
-            'h264',
+            'hevc',
             (percent, details) => {
-                emitProgress('h264', 20 + (percent / 100) * 40, details);
-            }
+                emitProgress('hevc', 60 + (percent / 100) * 40, details);
+            },
+            signal
         );
 
         codecVariants.push({
-            encoder: h264Encoder,
-            codecName: 'h264',
-            playlistPrefix: 'playlist_h264',
-            segmentPrefix: 'segment_h264',
-            initPrefix: 'init_h264',
-            qualities: h264Qualities,
-            masterPlaylist: path.join(outputPath, 'h264.m3u8'),
+            encoder: 'hevc_nvenc',
+            codecName: 'hevc',
+            playlistPrefix: 'playlist_hevc',
+            segmentPrefix: 'segment_hevc',
+            initPrefix: 'init_hevc',
+            qualities: hevcQualities,
+            masterPlaylist: path.join(outputPath, 'hevc.m3u8'),
         });
+    }
 
+    logger.info('Generating master playlist with multiple codecs...');
+    const masterPath = await generateMasterPlaylist(
+        outputPath,
+        codecVariants,
+        videoInfo.audioTracks,
+        videoInfo.subtitleTracks
+    );
 
-        if (generateHevc) {
-            logger.info(`Processing ${qualities.length} HEVC qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
-            const hevcQualities = await processCodecQualities(
-                inputPath,
-                outputPath,
-                qualities,
-                'hevc_nvenc',
-                gopSize,
-                isWindows,
-                'hevc',
-                (percent, details) => {
-                    emitProgress('hevc', 60 + (percent / 100) * 40, details);
-                }
-            );
+    let thumbnailTimeout = 0;
+    while (thumbResult.thumbnails.length === 0 && thumbnailTimeout < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        thumbnailTimeout++;
+    }
 
-            codecVariants.push({
-                encoder: 'hevc_nvenc',
-                codecName: 'hevc',
-                playlistPrefix: 'playlist_hevc',
-                segmentPrefix: 'segment_hevc',
-                initPrefix: 'init_hevc',
-                qualities: hevcQualities,
-                masterPlaylist: path.join(outputPath, 'hevc.m3u8'),
-            });
-        }
-
-        logger.info('Generating master playlist with multiple codecs...');
-        const masterPath = await generateMasterPlaylist(
-            outputPath,
-            codecVariants,
-            videoInfo.audioTracks,
-            videoInfo.subtitleTracks
-        );
-
-        let thumbnailTimeout = 0;
-        while (thumbResult.thumbnails.length === 0 && thumbnailTimeout < 50) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            thumbnailTimeout++;
-        }
-
-        emitProgress('done', 100, {
-            completedQualities: qualities.length,
-            totalQualities: qualities.length,
-        });
-
-        const result: HLSResult = {
-            masterPlaylist: masterPath,
-            thumbnails: thumbResult.thumbnails,
-            audioTracks: videoInfo.audioTracks,
-            subtitleTracks: videoInfo.subtitleTracks,
-            thumbnailsSprite: thumbResult.sprite || undefined,
-            thumbnailsVtt: thumbResult.vtt || undefined,
-            codecVariants,
-        };
-
-        resolve(result);
+    emitProgress('done', 100, {
+        completedQualities: qualities.length,
+        totalQualities: qualities.length,
     });
-};
 
+    const result: HLSResult = {
+        masterPlaylist: masterPath,
+        thumbnails: thumbResult.thumbnails,
+        audioTracks: videoInfo.audioTracks,
+        subtitleTracks: videoInfo.subtitleTracks,
+        thumbnailsSprite: thumbResult.sprite || undefined,
+        thumbnailsVtt: thumbResult.vtt || undefined,
+        codecVariants,
+    };
+
+    logger.info(`HLS generation complete for video ${videoId}`);
+    return result;
+};
 
 async function processCodecQualities(
     inputPath: string,
@@ -438,7 +470,8 @@ async function processCodecQualities(
     gopSize: number,
     isWindows: boolean,
     codecName: string,
-    onProgress: (percent: number, details: any) => void
+    onProgress: (percent: number, details: any) => void,
+    signal?: AbortSignal
 ): Promise<QualityProfile[]> {
     const qualityProgress = new Array(qualities.length).fill(0);
     const qualitiesStatus: { name: string; status: 'pending' | 'processing' | 'completed' | 'failed' }[] =
@@ -460,6 +493,8 @@ async function processCodecQualities(
     };
 
     const processQuality = async (qIndex: number): Promise<void> => {
+        if (signal?.aborted) throw new Error('CANCELLED');
+
         const quality = qualities[qIndex];
         qualitiesStatus[qIndex].status = 'processing';
         updateTotalProgress();
@@ -489,7 +524,13 @@ async function processCodecQualities(
         };
 
         try {
-            await runFFmpegWithProgress(args, isWindows, `${codecName.toUpperCase()} ${quality.name}`, onQualityProgress);
+            await runFFmpegWithProgress(
+                args,
+                isWindows,
+                `${codecName.toUpperCase()} ${quality.name}`,
+                onQualityProgress,
+                signal
+            );
             qualitiesStatus[qIndex].status = 'completed';
             qualityProgress[qIndex] = 100;
             updateTotalProgress();

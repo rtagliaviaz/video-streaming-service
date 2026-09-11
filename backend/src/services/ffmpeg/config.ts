@@ -71,6 +71,8 @@ export const getQualitiesByNames = (names: string[]): QualityProfile[] => {
     return QUALITY_PROFILES.filter(q => names.includes(q.name));
 };
 
+
+
 export const HLS_CONFIG = {
     segmentDuration: 2,
     audioBitrate: '128k',

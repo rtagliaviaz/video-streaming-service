@@ -8,7 +8,7 @@ export const videoApi = {
     uploadVideo: async (
         file: File,
         onProgress?: (percent: number) => void,
-        qualities?: string[] 
+        qualities?: string[]
     ): Promise<{ data: { jobId: string; videoId: string; originalName: string; qualities?: string[] } }> => {
         const formData = new FormData();
         formData.append('video', file);
@@ -28,7 +28,7 @@ export const videoApi = {
             };
 
             xhr.onload = () => {
-                if (xhr.status === 200) {
+                if (xhr.status === 200 || xhr.status === 202) {
                     try {
                         const response = JSON.parse(xhr.responseText);
                         resolve({ data: response });
@@ -49,6 +49,21 @@ export const videoApi = {
             xhr.send(formData);
         });
     },
+
+    getJobStatus: (jobId: string) => api.get(`/jobs/${jobId}`),
+
+    listJobs: (states?: string[], limit?: number, offset?: number) => {
+        const params = new URLSearchParams();
+        if (states && states.length > 0) {
+            params.append('states', states.join(','));
+        }
+        if (limit) params.append('limit', String(limit));
+        if (offset) params.append('offset', String(offset));
+        return api.get(`/jobs?${params.toString()}`);
+    },
+
+    cancelJob: (jobId: string) => api.delete(`/jobs/${jobId}`),
+    retryJob: (jobId: string) => api.post(`/jobs/${jobId}/retry`),
 
     getGPUInfo: () => api.get('/gpu/info'),
     getQueueStatus: () => api.get('/queue/status'),

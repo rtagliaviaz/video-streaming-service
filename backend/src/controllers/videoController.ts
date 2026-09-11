@@ -3,12 +3,18 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { checkGPUAvailability, getVideoInfo } from '../services/ffmpeg';
-import { processingQueue } from '../services/queueService';
+import {
+    videoQueue,
+    addVideoJob,
+    getJobStatus,
+    listJobs,
+    cancelVideoJob,
+    retryVideoJob,
+} from '../services/queueService';
 import { config } from '../config';
-import { VideoMetadataService } from '../services/videoMetadata';
+import { metadataService, VideoMetadataService } from '../services/videoMetadata';
 import { logger } from '../logger';
-
-const metadataService = new VideoMetadataService(config.outputFolder);
+import { progressEmitter } from '../services/eventEmitter';
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -21,9 +27,9 @@ const storage = multer.diskStorage({
     },
 });
 
-const upload = multer({ 
+const upload = multer({
     storage,
-    limits: { fileSize: 4 * 1024 * 1024 * 1024 }
+    limits: { fileSize: 4 * 1024 * 1024 * 1024 },
 });
 
 export const videoController = {
@@ -33,7 +39,7 @@ export const videoController = {
         try {
             const { videoId } = req.params;
             const metadata = metadataService.getVideo(videoId);
-            
+
             if (metadata) {
                 return res.json({
                     videoId,
@@ -43,25 +49,22 @@ export const videoController = {
                     originalName: metadata.originalName,
                     size: metadata.size,
                     qualities: metadata.qualities || [],
+                    status: metadata.status || 'unknown',
+                    jobId: metadata.jobId,
                 });
-            }
-
-            const videoPath = path.join(config.outputFolder, videoId);
-            if (!fs.existsSync(videoPath)) {
-                return res.status(404).json({ error: 'Video not found' });
             }
 
             const uploadsDir = config.videoFolder;
             const files = fs.readdirSync(uploadsDir);
             const originalFile = files.find(f => f.includes(videoId.replace('video_', '')));
-            
+
             if (!originalFile) {
                 return res.json({ audioTracks: [], subtitleTracks: [] });
             }
 
             const inputPath = path.join(uploadsDir, originalFile);
             const info = await getVideoInfo(inputPath);
-            
+
             res.json({
                 videoId,
                 audioTracks: info.audioTracks || [],
@@ -100,8 +103,8 @@ export const videoController = {
             let selectedQualities: string[] | null = null;
             if (req.body.qualities) {
                 try {
-                    selectedQualities = typeof req.body.qualities === 'string' 
-                        ? JSON.parse(req.body.qualities) 
+                    selectedQualities = typeof req.body.qualities === 'string'
+                        ? JSON.parse(req.body.qualities)
                         : req.body.qualities;
                 } catch (e) {
                     logger.warn('Invalid qualities format, using all qualities');
@@ -110,50 +113,119 @@ export const videoController = {
 
             const videoId = `video_${Date.now()}`;
             const inputPath = file.path;
-            const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
             const info = await getVideoInfo(inputPath);
             const originalName = VideoMetadataService.getOriginalName(file.filename);
             const stats = fs.statSync(inputPath);
-            
-            metadataService.addOrUpdateVideo({
+
+            const initialMetadata = {
                 id: videoId,
-                originalName: originalName,
+                originalName,
                 createdAt: new Date().toISOString(),
                 duration: info.duration,
-                durationFormatted: info.durationFormatted,
+                durationFormatted: info.durationFormatted || '00:00:00',
                 size: stats.size,
                 qualities: selectedQualities || [],
                 audioTracks: info.audioTracks,
                 subtitleTracks: info.subtitleTracks,
-            });
+                status: 'queued' as const,
+            };
+            metadataService.addOrUpdateVideo(initialMetadata);
+
+            const jobId = await addVideoJob(
+                inputPath,
+                config.outputFolder,
+                selectedQualities || ['480p', '720p', '1080p', '1440p'],
+                videoId
+            );
+
+            const updatedMetadata = {
+                ...initialMetadata,
+                jobId,
+            };
+            metadataService.addOrUpdateVideo(updatedMetadata);
+
+            progressEmitter.emit('videos-changed');
 
             res.json({
                 success: true,
                 jobId,
                 videoId,
                 originalName,
-                message: 'Video processing started',
+                message: 'Video enqueued for processing',
                 qualities: selectedQualities,
             });
-
-            processingQueue.add({
-                id: jobId,
-                videoId,
-                inputPath,
-                outputDir: config.outputFolder,
-                qualities: selectedQualities,
-            }).catch((error) => {
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                logger.error({ jobId, error: errorMessage }, `Job ${jobId} failed`);
-            });
-
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             logger.error({ error: errorMessage }, 'Process error');
             if (!res.headersSent) {
                 res.status(500).json({ error: 'Failed to start processing' });
             }
+        }
+    },
+
+    getJobStatusHandler: async (req: Request, res: Response) => {
+        const { jobId } = req.params;
+        if (!jobId) {
+            return res.status(400).json({ error: 'jobId required' });
+        }
+        try {
+            const status = await getJobStatus(jobId);
+            if (!status) {
+                return res.status(404).json({ error: 'Job not found' });
+            }
+            res.json(status);
+        } catch (error) {
+            logger.error(error);
+            res.status(500).json({ error: 'Failed to get job status' });
+        }
+    },
+
+    listJobsHandler: async (req: Request, res: Response) => {
+        const { states, limit, offset } = req.query;
+        try {
+            const statesArray = states
+                ? (states as string).split(',') as ('waiting' | 'active' | 'completed' | 'failed' | 'delayed')[]
+                : undefined;
+            const jobs = await listJobs(statesArray, Number(limit) || 20, Number(offset) || 0);
+            res.json(jobs);
+        } catch (error) {
+            logger.error(error);
+            res.status(500).json({ error: 'Failed to list jobs' });
+        }
+    },
+
+    cancelJobHandler: async (req: Request, res: Response) => {
+        const { jobId } = req.params;
+        if (!jobId) {
+            return res.status(400).json({ error: 'jobId required' });
+        }
+        try {
+            const cancelled = await cancelVideoJob(jobId);
+            if (!cancelled) {
+                return res.status(404).json({ error: 'Job not found or not cancellable' });
+            }
+            res.json({ success: true, message: 'Job cancelled' });
+        } catch (error) {
+            logger.error(error);
+            res.status(500).json({ error: 'Failed to cancel job' });
+        }
+    },
+
+    retryJobHandler: async (req: Request, res: Response) => {
+        const { jobId } = req.params;
+        if (!jobId) {
+            return res.status(400).json({ error: 'jobId required' });
+        }
+        try {
+            const retried = await retryVideoJob(jobId);
+            if (!retried) {
+                return res.status(404).json({ error: 'Job not found or not retryable' });
+            }
+            res.json({ success: true, message: 'Job retried' });
+        } catch (error) {
+            logger.error(error);
+            res.status(500).json({ error: 'Failed to retry job' });
         }
     },
 
@@ -198,7 +270,6 @@ export const videoController = {
             return res.status(404).json({ error: 'File not found' });
         }
 
-        // si es vtt establecer el tipo correcto en el header
         if (thumbnail.endsWith('.vtt')) {
             res.setHeader('Content-Type', 'text/vtt');
             res.setHeader('Cache-Control', 'no-cache');
@@ -207,31 +278,45 @@ export const videoController = {
         res.sendFile(thumbPath);
     },
 
-    getQueueStatus: (req: Request, res: Response) => {
-        res.json(processingQueue.getStatus());
+    getQueueStatus: async (req: Request, res: Response) => {
+        try {
+            const counts = await videoQueue.getJobCounts();
+            res.json({
+                waiting: counts.waiting || 0,
+                active: counts.active || 0,
+                completed: counts.completed || 0,
+                failed: counts.failed || 0,
+                delayed: counts.delayed || 0,
+            });
+        } catch (error) {
+            logger.error(error);
+            res.status(500).json({ error: 'Failed to get queue status' });
+        }
     },
 
     listVideos: (req: Request, res: Response) => {
         try {
             const videos = metadataService.getAllVideos();
-            
+
             const enrichedVideos = videos.map(video => {
                 const videoPath = path.join(config.outputFolder, video.id);
                 const exists = fs.existsSync(videoPath);
                 const qualities = getAvailableQualities(videoPath);
                 const thumbnails = getAvailableThumbnails(videoPath);
-                
+
                 return {
                     id: video.id,
                     originalName: video.originalName,
                     createdAt: video.createdAt,
                     duration: video.duration,
-                    durationFormatted: video.durationFormatted || '00:00:00', 
+                    durationFormatted: video.durationFormatted || '00:00:00',
                     size: video.size,
                     exists,
                     playlist: exists ? `/api/stream/${video.id}` : null,
                     qualities: qualities.length > 0 ? qualities : video.qualities,
                     thumbnails: thumbnails.length > 0 ? thumbnails : null,
+                    status: video.status || 'unknown',
+                    jobId: video.jobId || null,
                 };
             });
 
@@ -247,7 +332,7 @@ export const videoController = {
         try {
             const { videoId } = req.params;
             const videoPath = path.join(config.outputFolder, videoId);
-            
+
             if (!fs.existsSync(videoPath)) {
                 return res.status(404).json({ error: 'Video not found' });
             }
@@ -256,6 +341,8 @@ export const videoController = {
             logger.info(`Deleted video: ${videoId}`);
 
             metadataService.deleteVideo(videoId);
+
+            progressEmitter.emit('videos-changed');
 
             const uploadsDir = config.videoFolder;
             const uploadFiles = fs.readdirSync(uploadsDir).filter(f => f.includes(videoId.replace('video_', '')));
@@ -293,9 +380,9 @@ export const videoController = {
                 }
             });
 
-            res.json({ 
-                success: true, 
-                message: `Cleaned up ${deletedCount} temporary files` 
+            res.json({
+                success: true,
+                message: `Cleaned up ${deletedCount} temporary files`
             });
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -309,7 +396,7 @@ function getAvailableQualities(videoPath: string): string[] {
     try {
         const files = fs.readdirSync(videoPath);
         const qualityPatterns = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p'];
-        return qualityPatterns.filter(pattern => 
+        return qualityPatterns.filter(pattern =>
             files.some(f => f.includes(pattern))
         );
     } catch {

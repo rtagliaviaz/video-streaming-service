@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { videoApi } from '../../../services/api';
+import { useVideoListEvents } from './useVideoListEvents';
 import type { Video } from '../types';
 
 export const useVideoList = () => {
@@ -7,52 +8,58 @@ export const useVideoList = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [deleting, setDeleting] = useState<string | null>(null);
-    const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set()); 
-    const [isBulkDeleting, setIsBulkDeleting] = useState(false); 
+    const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
+    const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
     const loadVideos = useCallback(async () => {
         try {
             const response = await videoApi.getVideos();
-            setVideos(response.data.videos);
+            setVideos(response.data.videos || []);
             setError(null);
         } catch (err) {
-            console.error('Failed to load videos:', err);
+            console.error('Error fetching videos:', err);
             setError('Failed to load videos');
         } finally {
             setLoading(false);
         }
     }, []);
 
-    const deleteVideo = useCallback(async (videoId: string) => {
+    useEffect(() => {
+        loadVideos();
+    }, [loadVideos]);
+
+    useVideoListEvents(loadVideos);
+
+    const deleteVideo = useCallback(async (videoId: string): Promise<boolean> => {
         setDeleting(videoId);
         try {
             await videoApi.deleteVideo(videoId);
-            await loadVideos();
+            setVideos((prev) => prev.filter((v) => v.id !== videoId));
+            setSelectedVideos((prev) => {
+                const next = new Set(prev);
+                next.delete(videoId);
+                return next;
+            });
             return true;
         } catch (err) {
-            console.error('Failed to delete video:', err);
-            setError('Failed to delete video');
+            console.error('Error deleting video:', err);
             return false;
         } finally {
             setDeleting(null);
         }
-    }, [loadVideos]);
+    }, []);
 
     const toggleSelectVideo = useCallback((videoId: string) => {
         setSelectedVideos((prev) => {
-            const newSet = new Set(prev);
-            if (newSet.has(videoId)) {
-                newSet.delete(videoId);
-            } else {
-                newSet.add(videoId);
-            }
-            return newSet;
+            const next = new Set(prev);
+            if (next.has(videoId)) next.delete(videoId);
+            else next.add(videoId);
+            return next;
         });
     }, []);
 
     const selectAllVideos = useCallback(() => {
-        const allIds = videos.filter(v => v.exists).map(v => v.id);
-        setSelectedVideos(new Set(allIds));
+        setSelectedVideos(new Set(videos.filter((v) => v.exists).map((v) => v.id)));
     }, [videos]);
 
     const deselectAllVideos = useCallback(() => {
@@ -61,30 +68,20 @@ export const useVideoList = () => {
 
     const deleteSelectedVideos = useCallback(async () => {
         if (selectedVideos.size === 0) return;
-        
-        if (!confirm(`Are you sure you want to delete ${selectedVideos.size} video(s)?`)) {
-            return;
-        }
+        if (!confirm(`Delete ${selectedVideos.size} video(s)?`)) return;
 
         setIsBulkDeleting(true);
         try {
-            const deletePromises = Array.from(selectedVideos).map(id => videoApi.deleteVideo(id));
-            await Promise.all(deletePromises);
-            await loadVideos();
+            const ids = Array.from(selectedVideos);
+            await Promise.all(ids.map((id) => videoApi.deleteVideo(id)));
+            setVideos((prev) => prev.filter((v) => !selectedVideos.has(v.id)));
             setSelectedVideos(new Set());
         } catch (err) {
-            console.error('Failed to delete videos:', err);
-            setError('Failed to delete some videos');
+            console.error('Error bulk deleting:', err);
         } finally {
             setIsBulkDeleting(false);
         }
-    }, [selectedVideos, loadVideos]);
-
-    useEffect(() => {
-        loadVideos();
-        const interval = setInterval(loadVideos, 15000);
-        return () => clearInterval(interval);
-    }, [loadVideos]);
+    }, [selectedVideos]);
 
     return {
         videos,

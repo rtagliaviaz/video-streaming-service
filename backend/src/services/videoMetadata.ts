@@ -1,7 +1,23 @@
 import path from 'path';
 import fs from 'fs';
-import { VideoMetadata, AudioTrack, SubtitleTrack } from './ffmpeg/types';
+import { AudioTrack, SubtitleTrack } from './ffmpeg/types';
 import { logger } from '../logger';
+import { config } from '../config'; 
+
+export interface VideoMetadata {
+    id: string;
+    originalName: string;
+    createdAt: string;
+    duration: number;
+    durationFormatted?: string;
+    size: number;
+    qualities: string[];
+    audioTracks: AudioTrack[];
+    subtitleTracks: SubtitleTrack[];
+    jobId?: string;
+    status?: 'queued' | 'processing' | 'completed' | 'failed';
+    error?: string;
+}
 
 const METADATA_FILE = 'videos.json';
 
@@ -76,3 +92,5 @@ export class VideoMetadataService {
         return match ? match[1] : fileName;
     }
 }
+
+export const metadataService = new VideoMetadataService(config.outputFolder);
