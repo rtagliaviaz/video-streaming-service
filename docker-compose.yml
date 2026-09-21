@@ -1,6 +1,14 @@
-version: '3.8'
-
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: video-streaming-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -9,17 +17,15 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      # Persistencia de archivos de video
       - ./uploads:/app/uploads
       - ./hls:/app/hls
-      # Opcional: montar .env para variables de entorno en desarrollo
       - ./backend/.env:/app/.env:ro
     environment:
       - NODE_ENV=production
       - PORT=3001
       - VIDEO_FOLDER_PATH=/app/uploads
       - OUTPUT_FOLDER_PATH=/app/hls
-      - REDIS_HOST=redis 
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
       - redis
@@ -35,3 +41,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  redis-data:
