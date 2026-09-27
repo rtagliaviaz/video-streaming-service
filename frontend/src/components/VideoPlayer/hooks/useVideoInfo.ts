@@ -28,7 +28,7 @@ export const useVideoInfo = (videoId: string | null) => {
                     console.log('📝 Backend no devolvió subtítulos, leyendo del manifiesto HLS...');
                     
                     try {
-                        const manifestUrl = `http://localhost:3001/hls/${videoId}/index.m3u8`;
+                        const manifestUrl = `http://localhost:3001/api/hls/${videoId}/index.m3u8`;
                         const manifestResponse = await fetch(manifestUrl);
                         const manifestText = await manifestResponse.text();
                         

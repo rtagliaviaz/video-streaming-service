@@ -21,17 +21,19 @@ export function useThumbnailVTT(videoId: string | null, duration: number = 0) {
       return;
     }
 
+    const baseUrl = `/api/hls/${videoId}/thumbnails`;
+
     const fetchVTT = async () => {
       setLoading(true);
       try {
-        const vttUrl = `/api/thumbnails/${videoId}/thumbnails.vtt`;
+        const vttUrl = `${baseUrl}/thumbnails.vtt`;
         const response = await fetch(vttUrl);
         if (!response.ok) throw new Error('VTT not found');
         const vttText = await response.text();
         const parsed = parseVTT(vttText);
         if (parsed.length > 0) {
           setTiles(parsed);
-          setSpriteUrl(`/api/thumbnails/${videoId}/sprite.jpg`);
+          setSpriteUrl(`${baseUrl}/sprite.jpg`);
         } else {
           useFallback(duration);
         }
@@ -68,7 +70,7 @@ export function useThumbnailVTT(videoId: string | null, duration: number = 0) {
         });
       }
       setTiles(fallbackTiles);
-      setSpriteUrl(`/api/thumbnails/${videoId}/sprite.jpg`);
+      setSpriteUrl(`${baseUrl}/sprite.jpg`);
     };
 
     fetchVTT();

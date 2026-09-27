@@ -9,37 +9,18 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: video-streaming-backend
+  minio:
+    image: quay.io/minio/minio:latest 
+    container_name: video-streaming-minio
     ports:
-      - "3001:3001"
-    volumes:
-      - ./uploads:/app/uploads
-      - ./hls:/app/hls
-      - ./backend/.env:/app/.env:ro
+      - "9000:9000"   # api s3
+      - "9001:9001"   # web
     environment:
-      - NODE_ENV=production
-      - PORT=3001
-      - VIDEO_FOLDER_PATH=/app/uploads
-      - OUTPUT_FOLDER_PATH=/app/hls
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    depends_on:
-      - redis
-    restart: unless-stopped
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: video-streaming-frontend
-    ports:
-      - "5173:80"
-    depends_on:
-      - backend
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./minio-data:/data
     restart: unless-stopped
 
 volumes:

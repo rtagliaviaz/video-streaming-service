@@ -8,6 +8,7 @@ import { logger } from '../logger';
 import { metadataService } from './videoMetadata';
 import { ProgressInfo } from './ffmpeg/types';
 import { progressEmitter } from './eventEmitter';
+import { uploadDirectory, ensureBucket } from './s3Service';
 
 const connection = new IORedis({
   host: config.redis.host,
@@ -16,24 +17,23 @@ const connection = new IORedis({
   maxRetriesPerRequest: null,
 });
 
-
 const backendStartTime = Date.now();
 logger.info('[bullmq] Initializing Redis connection...');
 
 connection.on('connect', () => {
-  logger.info(
-    `[bullmq] Redis TCP connected`
-  );
+  logger.info(`[bullmq] Redis TCP connected`);
 });
 
 connection.on('ready', () => {
-  logger.info(
-    `[bullmq] Redis ready to accept commands`
-  );
+  logger.info(`[bullmq] Redis ready to accept commands`);
 });
 
 connection.on('error', (err) => {
   logger.error({ err: err.message }, '[bullmq] Redis connection error');
+});
+
+ensureBucket().catch((err) => {
+  logger.error({ err }, '[bullmq] Failed to ensure MinIO bucket');
 });
 
 export const videoQueue = new Queue('video-processing', { connection });
@@ -94,6 +94,7 @@ export const videoWorker = new Worker(
       }
       progressEmitter.emit('videos-changed');
 
+      
       const result = await generateHLS(
         videoPath,
         outputDir,
@@ -104,6 +105,17 @@ export const videoWorker = new Worker(
       );
 
       jobAbortControllers.delete(job.id!);
+
+
+      logger.info(`[bullmq] Uploading HLS to MinIO for video ${videoId}`);
+      await uploadDirectory(outputPath, videoId);
+
+      try {
+        fs.rmSync(outputPath, { recursive: true, force: true });
+        logger.info(`[bullmq] Deleted local temp dir: ${outputPath}`);
+      } catch (err) {
+        logger.warn({ err, outputPath }, '[bullmq] Failed to delete local temp dir');
+      }
 
       try {
         if (videoPath && fs.existsSync(videoPath)) {
@@ -157,9 +169,7 @@ export const videoWorker = new Worker(
 );
 
 videoWorker.on('ready', () => {
-  logger.info(
-    `[bullmq] Worker is READY to process jobs`
-  );
+  logger.info(`[bullmq] Worker is READY to process jobs`);
 });
 
 videoWorker.on('active', (job) => {
@@ -238,7 +248,6 @@ queueEvents.on('waiting', ({ jobId }) => {
     logger.warn({ err }, '[bullmq] Failed to log pending jobs on startup');
   }
 })();
-
 
 export async function getJobStatus(jobId: string) {
   const job = await videoQueue.getJob(jobId);

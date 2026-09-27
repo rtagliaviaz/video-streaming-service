@@ -10,10 +10,7 @@ router.get('/video/info/:videoId', videoController.getVideoInfo);
 
 router.post('/upload', videoController.uploadVideo, videoController.processVideo);
 
-router.get('/stream/:videoId', videoController.getStream);
-router.get('/segment/:videoId/:segment', videoController.getSegment);
-
-router.get('/thumbnails/:videoId/:thumbnail', videoController.getThumbnail);
+router.get(/^\/hls\/([^/]+)\/(.+)$/, videoController.getHlsFile);
 
 router.get('/queue/status', videoController.getQueueStatus);
 

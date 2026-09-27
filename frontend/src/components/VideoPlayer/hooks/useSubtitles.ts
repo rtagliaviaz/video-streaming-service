@@ -63,7 +63,7 @@ export const useSubtitles = (
         if (subtitleTracks.length === 0) return;
 
         const video = videoRef.current;
-        const baseUrl = `http://localhost:3001/hls/${videoId}`;
+        const baseUrl = `http://localhost:3001/api/hls/${videoId}`;
 
         console.log(`📝 Cargando ${subtitleTracks.length} subtítulos...`);
 

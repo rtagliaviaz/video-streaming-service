@@ -15,6 +15,7 @@ import { config } from '../config';
 import { metadataService, VideoMetadataService } from '../services/videoMetadata';
 import { logger } from '../logger';
 import { progressEmitter } from '../services/eventEmitter';
+import { getObjectStream, deletePrefix, objectExists  } from '../services/s3Service';
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -229,61 +230,49 @@ export const videoController = {
         }
     },
 
-    getStream: (req: Request, res: Response) => {
-        const { videoId } = req.params;
-        const playlistPath = path.join(config.outputFolder, videoId, 'index.m3u8');
+    getHlsFile: async (req: Request, res: Response) => {
+        const videoId = req.params[0];
+        const filePath = req.params[1];
 
-        if (!fs.existsSync(playlistPath)) {
-            return res.status(404).json({ error: 'Video not found' });
+        if (!videoId || !filePath) {
+            return res.status(400).json({ error: 'Missing videoId or filePath' });
         }
 
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.sendFile(playlistPath);
-    },
+        const key = `${videoId}/${filePath}`;
 
-    getSegment: (req: Request, res: Response) => {
-        const { videoId, segment } = req.params;
-        const segmentPath = path.join(config.outputFolder, videoId, segment);
+        try {
+            const obj = await getObjectStream(key);
+            if (!obj) {
+                return res.status(404).json({ error: 'File not found' });
+            }
 
-        if (!fs.existsSync(segmentPath)) {
-            return res.status(404).json({ error: 'Segment not found' });
+            if (obj.contentType) res.setHeader('Content-Type', obj.contentType);
+            if (obj.contentLength !== undefined) res.setHeader('Content-Length', String(obj.contentLength));
+            if (obj.cacheControl) res.setHeader('Cache-Control', obj.cacheControl);
+            if (obj.etag) res.setHeader('ETag', obj.etag);
+            if (obj.lastModified) res.setHeader('Last-Modified', obj.lastModified.toUTCString());
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            // destruir el stream para liberar la conexión a MinIO.
+            req.on('close', () => {
+                obj.stream.destroy();
+            });
+
+            obj.stream.on('error', (err) => {
+                logger.error({ err, key }, 'Stream error');
+                obj.stream.destroy();
+                if (!res.headersSent) res.status(500).end();
+                else res.end();
+            });
+
+            obj.stream.pipe(res);
+        } catch (error: any) {
+            const isTimeout = error?.name === 'TimeoutError';
+            logger.error({ error: error?.name, key }, 'getHlsFile error');
+            if (!res.headersSent) {
+                res.status(isTimeout ? 504 : 500).json({ error: 'Failed to fetch file' });
+            }
         }
-
-        if (segment.endsWith('.m4s')) {
-            res.setHeader('Content-Type', 'video/mp4');
-        } else if (segment.endsWith('.mp4')) {
-            res.setHeader('Content-Type', 'video/mp4');
-        } else if (segment.endsWith('.ts')) {
-            res.setHeader('Content-Type', 'video/mp2t');
-        } else if (segment.endsWith('.m3u8')) {
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        }
-
-        res.sendFile(segmentPath);
-    },
-
-    getThumbnail: (req: Request, res: Response) => {
-        const { videoId, thumbnail } = req.params;
-        const thumbPath = path.join(config.outputFolder, videoId, 'thumbnails', thumbnail);
-
-        if (!fs.existsSync(thumbPath)) {
-            return res.status(404).json({ error: 'File not found' });
-        }
-
-        const headers: Record<string, string> = {};
-
-        if (thumbnail.endsWith('.vtt')) {
-            headers['Content-Type'] = 'text/vtt';
-            headers['Cache-Control'] = 'public, max-age=31536000, immutable';
-        } else if (thumbnail.endsWith('.jpg') || thumbnail.endsWith('.jpeg')) {
-            headers['Content-Type'] = 'image/jpeg';
-            headers['Cache-Control'] = 'public, max-age=31536000, immutable';
-        } else if (thumbnail.endsWith('.png')) {
-            headers['Content-Type'] = 'image/png';
-            headers['Cache-Control'] = 'public, max-age=31536000, immutable';
-        }
-
-        res.sendFile(thumbPath, { headers });
     },
 
     getQueueStatus: async (req: Request, res: Response) => {
@@ -302,31 +291,30 @@ export const videoController = {
         }
     },
 
-    listVideos: (req: Request, res: Response) => {
+    listVideos: async (req: Request, res: Response) => {
         try {
             const videos = metadataService.getAllVideos();
 
-            const enrichedVideos = videos.map(video => {
-                const videoPath = path.join(config.outputFolder, video.id);
-                const exists = fs.existsSync(videoPath);
-                const qualities = getAvailableQualities(videoPath);
-                const thumbnails = getAvailableThumbnails(videoPath);
+            const enrichedVideos = await Promise.all(
+                videos.map(async (video) => {
+                    const exists = await objectExists(`${video.id}/index.m3u8`);
 
-                return {
-                    id: video.id,
-                    originalName: video.originalName,
-                    createdAt: video.createdAt,
-                    duration: video.duration,
-                    durationFormatted: video.durationFormatted || '00:00:00',
-                    size: video.size,
-                    exists,
-                    playlist: exists ? `/api/stream/${video.id}` : null,
-                    qualities: qualities.length > 0 ? qualities : video.qualities,
-                    thumbnails: thumbnails.length > 0 ? thumbnails : null,
-                    status: video.status || 'unknown',
-                    jobId: video.jobId || null,
-                };
-            });
+                    return {
+                        id: video.id,
+                        originalName: video.originalName,
+                        createdAt: video.createdAt,
+                        duration: video.duration,
+                        durationFormatted: video.durationFormatted || '00:00:00',
+                        size: video.size,
+                        exists,
+                        playlist: exists ? `/api/hls/${video.id}/index.m3u8` : null,
+                        qualities: video.qualities || [],
+                        thumbnails: null,
+                        status: video.status || 'unknown',
+                        jobId: video.jobId || null,
+                    };
+                })
+            );
 
             res.json({ videos: enrichedVideos });
         } catch (error) {
@@ -339,27 +327,32 @@ export const videoController = {
     deleteVideo: async (req: Request, res: Response) => {
         try {
             const { videoId } = req.params;
-            const videoPath = path.join(config.outputFolder, videoId);
 
-            if (!fs.existsSync(videoPath)) {
+            const metadata = metadataService.getVideo(videoId);
+            if (!metadata) {
                 return res.status(404).json({ error: 'Video not found' });
             }
+            try {
+                await deletePrefix(videoId);
+            } catch (err) {
+                logger.warn({ err, videoId }, 'Failed to delete from MinIO');
+            }
 
-            fs.rmSync(videoPath, { recursive: true, force: true });
-            logger.info(`Deleted video: ${videoId}`);
+            const videoPath = path.join(config.outputFolder, videoId);
+            if (fs.existsSync(videoPath)) {
+                fs.rmSync(videoPath, { recursive: true, force: true });
+            }
 
             metadataService.deleteVideo(videoId);
-
             progressEmitter.emit('videos-changed');
 
             const uploadsDir = config.videoFolder;
-            const uploadFiles = fs.readdirSync(uploadsDir).filter(f => f.includes(videoId.replace('video_', '')));
+            const uploadFiles = fs.readdirSync(uploadsDir).filter(f =>
+                f.includes(videoId.replace('video_', ''))
+            );
             uploadFiles.forEach(file => {
                 const filePath = path.join(uploadsDir, file);
-                if (fs.existsSync(filePath)) {
-                    fs.unlinkSync(filePath);
-                    logger.info(`Deleted upload: ${file}`);
-                }
+                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             });
 
             res.json({ success: true, message: 'Video deleted successfully' });
@@ -398,6 +391,8 @@ export const videoController = {
             res.status(500).json({ error: 'Failed to cleanup temporary files' });
         }
     },
+
+    
 };
 
 function getAvailableQualities(videoPath: string): string[] {

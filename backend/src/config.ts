@@ -27,11 +27,20 @@ const getRedisConfig = () => ({
     password: process.env.REDIS_PASSWORD || undefined,
 });
 
+
+const getMinioConfig = () => ({
+    endpoint: process.env.MINIO_ENDPOINT || 'http://localhost:9000',
+    accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
+    secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
+    bucket: process.env.MINIO_BUCKET || 'hls',
+});
+
 export const config = {
     videoFolder: getVideoFolder(),
     outputFolder: getOutputFolder(),
     port: parseInt(process.env.PORT || '3001', 10),
     redis: getRedisConfig(),
+    minio: getMinioConfig(),
 };
 
 export const ensureDirectories = () => {

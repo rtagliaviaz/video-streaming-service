@@ -70,7 +70,7 @@ export const useHLS = ({
         }
 
         const video = videoRef.current;
-        const streamUrl = `http://localhost:3001/hls/${videoId}/index.m3u8`;
+        const streamUrl = `http://localhost:3001/api/hls/${videoId}/index.m3u8`;
 
         console.log('🎬 Loading stream:', streamUrl);
         onLoadingChangeRef.current(true);
@@ -96,6 +96,15 @@ export const useHLS = ({
                 abrBandWidthFactor: 0.8,
                 abrBandWidthUpFactor: 0.7,
                 startLevel: -1,
+                manifestLoadingMaxRetry: 2,
+                levelLoadingMaxRetry: 2,
+                fragLoadingMaxRetry: 2,
+                manifestLoadingRetryDelay: 1000,
+                levelLoadingRetryDelay: 1000,
+                fragLoadingRetryDelay: 1000,
+                manifestLoadingMaxRetryTimeout: 4000,
+                levelLoadingMaxRetryTimeout: 4000,
+                fragLoadingMaxRetryTimeout: 4000,
             });
 
             hlsRef.current = hls;
