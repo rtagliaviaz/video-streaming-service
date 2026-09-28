@@ -1,2 +1,19 @@
 .env
 minio-data/
+
+
+# Binaries
+backend/bin/
+backend/test_drm/
+backend/test_output/
+backend/video_480p.mp4
+backend/audio_0.mp4
+
+
+# License Service
+license-service/drm_keys.db
+license-service/__pycache__/
+license-service/.pytest_cache/
+license-service/venv/
+license-service/.venv/
+

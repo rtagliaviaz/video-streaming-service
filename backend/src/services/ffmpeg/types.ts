@@ -78,7 +78,7 @@ export interface VideoMetadata {
 
 export interface ProgressInfo {
     percent: number;
-    stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'h264' | 'hevc' | 'done';
+    stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'qualities' | 'h264' | 'hevc' | 'done';
     details?: {
         audioTracksExtracted?: number;
         totalAudioTracks?: number;

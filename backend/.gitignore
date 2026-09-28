@@ -3,3 +3,7 @@ hls/
 uploads/
 package-lock.json
 .env
+bin/
+test_drm/
+test_output/
+*.mp4

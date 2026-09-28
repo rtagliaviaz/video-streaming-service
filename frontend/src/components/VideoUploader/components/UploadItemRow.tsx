@@ -14,7 +14,7 @@ interface UploadItemRowProps {
 
 function mapStage(stage: string): ProgressInfo['stage'] {
     if (stage === 'h264' || stage === 'hevc') return 'qualities';
-    if (['thumbnails', 'audio', 'subtitles', 'done', 'idle'].includes(stage)) {
+    if (['thumbnails', 'audio', 'subtitles', 'qualities', 'done', 'idle'].includes(stage)) {
         return stage as ProgressInfo['stage'];
     }
     return 'idle';

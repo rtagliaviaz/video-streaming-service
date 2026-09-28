@@ -35,12 +35,19 @@ const getMinioConfig = () => ({
     bucket: process.env.MINIO_BUCKET || 'hls',
 });
 
+const getDrmConfig = () => ({
+    enabled: process.env.DRM_ENABLED !== 'false',
+    licenseServiceUrl: process.env.LICENSE_SERVICE_URL || 'http://localhost:4000',
+    packagerPath: process.env.SHAKA_PACKAGER_PATH || './bin/packager.exe',
+});
+
 export const config = {
     videoFolder: getVideoFolder(),
     outputFolder: getOutputFolder(),
     port: parseInt(process.env.PORT || '3001', 10),
     redis: getRedisConfig(),
     minio: getMinioConfig(),
+    drm: getDrmConfig(),
 };
 
 export const ensureDirectories = () => {
