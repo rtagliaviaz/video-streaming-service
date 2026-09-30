@@ -1,6 +1,10 @@
+import path from 'path';
 import { app } from './app';
 import { config } from './config';
 import { logger } from './logger';
+import { initDatabase } from './services/db';
+
+initDatabase();
 
 const PORT = config.port;
 

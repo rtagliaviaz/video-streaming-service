@@ -1,7 +1,7 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import Hls from 'hls.js';
 import type { VideoPlayerProps, Quality, AudioTrack, SubtitleTrack } from './types';
-import { useHLS } from './hooks/useHLS';
+import { usePlayerBackend } from './hooks/usePlayerBackend';
 import { useVideoControls } from './hooks/useVideoControls';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useVideoInfo } from './hooks/useVideoInfo';
@@ -11,8 +11,13 @@ import { Controls } from './components/Controls';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { ThumbnailPreview } from './components/ThumbnailPreview';
 import { playerStyles, containerStyles } from './styles';
+import type { FormatPreference } from './hooks/usePlayerBackend';
 
-export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
+export const VideoPlayer: React.FC<VideoPlayerProps> = ({
+  videoId,
+  hlsUrl = null,
+  dashUrl = null,
+}) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -32,6 +37,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
   const [isHoveringProgress, setIsHoveringProgress] = useState(false);
   const [mouseX, setMouseX] = useState(0);
   const [progressBarWidth, setProgressBarWidth] = useState(0);
+  const [formatPreference, setFormatPreference] = useState<FormatPreference>('auto');
 
   const { audioTracks: fetchedAudioTracks, subtitleTracks: fetchedSubtitleTracks } = useVideoInfo(videoId);
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef as React.RefObject<HTMLDivElement>);
@@ -58,39 +64,37 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
     cleanup: cleanupControls,
   } = useVideoControls(videoRef as React.RefObject<HTMLVideoElement>);
 
-  const { changeQuality } = useHLS({
+  const { format, changeQuality, changeAudioTrack, hasDASH, hasHLS } = usePlayerBackend({
     videoId,
     videoRef: videoRef as React.RefObject<HTMLVideoElement>,
+    hlsUrl,
+    dashUrl,
+    formatPreference,
+    hlsRef,
     onQualitiesLoaded: setQualities,
     onQualityChanged: (quality) => {
-      setCurrentQuality(quality);
-      setShowQualityMenu(false);
+        setCurrentQuality(quality);
+        setShowQualityMenu(false);
     },
     onLoadingChange: setIsLoading,
     onError: setError,
     onAudioTracksLoaded: (tracks) => {
-      console.log('🎵 Audio tracks loaded from HLS:', tracks);
-      if (tracks && tracks.length > 0) {
-        setAudioTracks(tracks);
-        setCurrentAudioTrack(0);
-        if (hlsRef.current && hlsRef.current.audioTrack !== undefined) {
-          setTimeout(() => {
-            if (hlsRef.current) {
-              hlsRef.current.audioTrack = 0;
-              console.log('✅ HLS audio track forzado a: 0');
-            }
-          }, 300);
+        if (tracks && tracks.length > 0) {
+            setAudioTracks(tracks);
+            setCurrentAudioTrack(0);
         }
-      }
     },
     onSubtitleTracksLoaded: (tracks) => {
-      if (tracks && tracks.length > 0) {
-        setSubtitleTracks(tracks);
-        if (tracks.length > 0) setCurrentSubtitleTrack(0);
-      }
+        if (tracks && tracks.length > 0) {
+            setSubtitleTracks(tracks);
+            setCurrentSubtitleTrack(0);
+        }
     },
-    hlsRef,
-  });
+});
+
+  useEffect(() => {
+    console.log(`📺 [VideoPlayer] Using ${format} backend for ${videoId ?? 'no video'}`);
+  }, [format, videoId]);
 
   useSubtitles(
     videoId,
@@ -102,14 +106,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
 
   useEffect(() => {
     if (fetchedAudioTracks && fetchedAudioTracks.length > 0 && audioTracks.length === 0) {
-      console.log('🎵 Usando audio tracks del backend (fallback):', fetchedAudioTracks);
+      console.log('🎵 Using audio tracks from backend (fallback):', fetchedAudioTracks);
       setAudioTracks(fetchedAudioTracks);
       setCurrentAudioTrack(0);
       if (hlsRef.current && hlsRef.current.audioTrack !== undefined) {
         setTimeout(() => {
           if (hlsRef.current) {
             hlsRef.current.audioTrack = 0;
-            console.log('✅ HLS audio track forzado a: 0 (desde backup)');
           }
         }, 500);
       }
@@ -132,21 +135,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
           tracks[i].mode = (!subtitlesEnabled) ? 'disabled' : (i === currentSubtitleTrack ? 'showing' : 'hidden');
         }
       }
-      console.log(`📝 Forzado cambio a track ${currentSubtitleTrack} (enabled: ${subtitlesEnabled})`);
     }
   }, [currentSubtitleTrack, subtitlesEnabled]);
 
   const handleAudioTrackChange = useCallback((trackIndex: number) => {
-    if (!hlsRef.current) return;
-    if (hlsRef.current.audioTrack !== undefined) {
-      hlsRef.current.audioTrack = trackIndex;
-      setCurrentAudioTrack(trackIndex);
-      console.log(`🎵 Audio track cambiado a: ${trackIndex}`);
-    }
-  }, []);
+    changeAudioTrack(trackIndex);
+    setCurrentAudioTrack(trackIndex);
+  }, [changeAudioTrack]);
 
   const handleSubtitleTrackChange = useCallback((trackIndex: number) => {
-    console.log(`📝 Cambiando a subtítulo: ${trackIndex}`);
+    console.log(`📝 Changing to subtitle: ${trackIndex}`);
     setCurrentSubtitleTrack(trackIndex);
     setSubtitlesEnabled(true);
     if (videoRef.current) {
@@ -169,12 +167,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
 
   const handleSubtitlesToggle = useCallback(() => {
     setSubtitlesEnabled(!subtitlesEnabled);
-    console.log(`📝 Subtítulos ${!subtitlesEnabled ? 'activados' : 'desactivados'}`);
   }, [subtitlesEnabled]);
 
   const handleQualityChange = (level: number) => {
     changeQuality(level);
-    if (level === -1) setCurrentQuality('auto');
   };
 
   const handleRetry = () => {
@@ -275,6 +271,51 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoId }) => {
           style={containerStyles.video}
           poster={`data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"><rect width="100%" height="100%" fill="%231a1a2e"/><text x="50%" y="50%" font-family="Arial" font-size="24" fill="%23666" text-anchor="middle">Loading...</text></svg>`}
         />
+
+        {showControls && (
+          <div
+              style={{
+                  position: 'absolute',
+                  top: '0.5rem',
+                  right: '0.5rem',
+                  zIndex: 10,
+                  transition: 'opacity 0.3s ease',
+                  opacity: showControls ? 1 : 0,
+                  pointerEvents: showControls ? 'auto' : 'none',
+              }}
+          >
+              <select
+                  value={formatPreference}
+                  onChange={(e) => setFormatPreference(e.target.value as FormatPreference)}
+                  style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 600,
+                      padding: '0.2rem 0.5rem',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      background: format === 'dash'
+                          ? 'rgba(124,58,237,0.9)'
+                          : format === 'hls'
+                              ? 'rgba(59,130,246,0.9)'
+                              : 'rgba(107,114,128,0.9)',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      outline: 'none',
+                  }}
+                  title="Player backend"
+              >
+                  <option value="auto">
+                      Auto {format !== 'none' ? `(${format.toUpperCase()})` : ''}
+                  </option>
+                  <option value="dash" disabled={!hasDASH}>
+                      DASH · ClearKey {hasDASH ? '' : '(unavailable)'}
+                  </option>
+                  <option value="hls" disabled={!hasHLS}>
+                      HLS · AES-128 {hasHLS ? '' : '(unavailable)'}
+                  </option>
+              </select>
+          </div>
+        )}
 
         <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0 }}>
           <Controls

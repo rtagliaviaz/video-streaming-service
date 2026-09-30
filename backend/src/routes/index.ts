@@ -11,6 +11,7 @@ router.get('/video/info/:videoId', videoController.getVideoInfo);
 router.post('/upload', videoController.uploadVideo, videoController.processVideo);
 
 router.get(/^\/hls\/([^/]+)\/(.+)$/, videoController.getHlsFile);
+router.get(/^\/dash\/([^/]+)\/(.+)$/, videoController.getDashFile);
 
 router.get('/queue/status', videoController.getQueueStatus);
 

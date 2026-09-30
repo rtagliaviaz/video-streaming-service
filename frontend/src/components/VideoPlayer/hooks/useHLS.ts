@@ -1,4 +1,4 @@
-// frontend/src/hooks/useHLS.ts
+// frontend/src/components/VideoPlayer/hooks/useHLS.ts
 import { useEffect, useRef, useCallback, useState } from 'react';
 import Hls from 'hls.js';
 import type { Quality, AudioTrack, SubtitleTrack } from '../types';
@@ -6,6 +6,8 @@ import type { Quality, AudioTrack, SubtitleTrack } from '../types';
 interface UseHLSProps {
     videoId: string | null;
     videoRef: React.RefObject<HTMLVideoElement>;
+    enabled?: boolean;
+    streamUrl?: string | null;
     onQualitiesLoaded: (qualities: Quality[]) => void;
     onQualityChanged: (quality: string) => void;
     onLoadingChange: (loading: boolean) => void;
@@ -18,6 +20,8 @@ interface UseHLSProps {
 export const useHLS = ({
     videoId,
     videoRef,
+    enabled = true,
+    streamUrl: externalStreamUrl,
     onQualitiesLoaded,
     onQualityChanged,
     onLoadingChange,
@@ -56,6 +60,14 @@ export const useHLS = ({
         [hlsRef]
     );
 
+    const changeAudioTrack = useCallback((trackIndex: number) => {
+        if (!hlsRef.current) return;
+        if (hlsRef.current.audioTrack !== undefined) {
+            hlsRef.current.audioTrack = trackIndex;
+            console.log(`[useHLS] Audio track → ${trackIndex}`);
+        }
+    }, [hlsRef]);
+
     const cleanup = useCallback(() => {
         if (hlsRef.current) {
             hlsRef.current.destroy();
@@ -64,15 +76,21 @@ export const useHLS = ({
     }, [hlsRef]);
 
     useEffect(() => {
+        if (!enabled) {
+            cleanup();
+            return;
+        }
+
         if (!videoRef.current || !videoId) {
             cleanup();
             return;
         }
 
         const video = videoRef.current;
-        const streamUrl = `http://localhost:3001/api/hls/${videoId}/index.m3u8`;
+        const finalStreamUrl =
+            externalStreamUrl || `http://localhost:3001/api/hls/${videoId}/master.m3u8`;
 
-        console.log('🎬 Loading stream:', streamUrl);
+        console.log('🎬 Loading HLS stream:', finalStreamUrl);
         onLoadingChangeRef.current(true);
         onErrorRef.current(null);
 
@@ -108,7 +126,7 @@ export const useHLS = ({
             });
 
             hlsRef.current = hls;
-            hls.loadSource(streamUrl);
+            hls.loadSource(finalStreamUrl);
             hls.attachMedia(video);
 
             const parseAndGroupQualities = (levels: any[]): Quality[] => {
@@ -153,7 +171,7 @@ export const useHLS = ({
                     .map(({ level, height, bitrate }) => ({
                         height,
                         name: `${height}p`,
-                        level, 
+                        level,
                         bitrate,
                     }));
             };
@@ -182,10 +200,6 @@ export const useHLS = ({
                     onAudioTracksLoadedRef.current?.(audioTracks);
 
                     const preferredIndex = 0;
-                    console.log(
-                        `🎵 Selecting audio track ${preferredIndex} (${audioTracks[preferredIndex]?.language})`
-                    );
-
                     if (hls.audioTrack !== undefined) {
                         hls.audioTrack = preferredIndex;
                         console.log(`✅ HLS audio track forced to: ${preferredIndex}`);
@@ -194,7 +208,6 @@ export const useHLS = ({
                     console.warn('⚠️ No audio tracks detected in HLS, forcing track 0');
                     if (hls.audioTrack !== undefined) {
                         hls.audioTrack = 0;
-                        console.log('✅ HLS audio track forced to: 0');
                     }
                 }
 
@@ -221,9 +234,6 @@ export const useHLS = ({
 
                     if (hlsRef.current && hlsRef.current.audioTrack !== undefined) {
                         hlsRef.current.audioTrack = 0;
-                        console.log(
-                            '✅ HLS audio track forced to: 0 (from AUDIO_TRACKS_UPDATED)'
-                        );
                     }
                 }
             });
@@ -288,7 +298,7 @@ export const useHLS = ({
             return cleanup;
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             console.log('🍎 Using Safari native HLS');
-            video.src = streamUrl;
+            video.src = finalStreamUrl;
             video.addEventListener('loadedmetadata', () => {
                 onLoadingChangeRef.current(false);
                 video
@@ -302,7 +312,7 @@ export const useHLS = ({
         }
 
         return cleanup;
-    }, [videoId, hlsRef, cleanup]);
+    }, [enabled, videoId, externalStreamUrl, hlsRef, cleanup, videoRef]);
 
-    return { changeQuality, currentLevel, hlsRef };
+    return { changeQuality, currentLevel, hlsRef, changeAudioTrack };
 };

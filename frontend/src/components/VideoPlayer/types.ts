@@ -24,4 +24,7 @@ export interface SubtitleTrack {
 
 export interface VideoPlayerProps {
     videoId: string | null;
+    hlsUrl?: string | null;
+    dashUrl?: string | null;
+    kid?: string | null;
 }

@@ -6,23 +6,32 @@
 ![Express](https://img.shields.io/badge/Express-5.2-000000?)
 ![FFmpeg](https://img.shields.io/badge/FFmpeg-8.0-007808?)
 ![HLS](https://img.shields.io/badge/HLS-Streaming-FF6B00?)
+![DASH](https://img.shields.io/badge/DASH-Streaming-0094FF?)
+![DRM](https://img.shields.io/badge/DRM-ClearKey%20%2B%20AES--128-8B5CF6?)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)
 ![BullMQ](https://img.shields.io/badge/BullMQ-6-FF0052?)
+![MinIO](https://img.shields.io/badge/MinIO-S3--compatible-C72C48?logo=minio)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?)
 ![GPU Acceleration](https://img.shields.io/badge/GPU-NVENC-76B900?logo=nvidia)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceleration, a persistent job queue, real-time progress via Server-Sent Events, multi-audio track support, adaptive bitrate streaming, subtitle extraction, and sprite sheet thumbnails with seeking preview.
+A self-hosted video streaming service with GPU-accelerated transcoding, **multi-format DRM-protected delivery (HLS + DASH)**, a persistent job queue, real-time progress via Server-Sent Events, multi-audio track support, adaptive bitrate streaming, subtitle extraction, and sprite sheet thumbnails with seeking preview.
+
+Uploads are transcoded to CMAF/fMP4 and packaged into two independent DRM-protected formats:
+
+- **HLS** with **AES-128 whole-segment encryption** (works with HLS.js without EME)
+- **DASH** with **ClearKey + EME** (works with dash.js via the browser's Encrypted Media Extensions API)
+
+The player detects browser capabilities and picks the best format automatically, with a manual override selector.
 
 ## Index
 
 - [Features](#features)
+- [DRM Architecture](#drm-architecture)
 - [GPU Acceleration (NVENC)](#gpu-acceleration-nvenc)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-  - [Option 1: Docker](#option-1-docker)
-  - [Option 2: Local Development](#option-2-local-development)
 - [Environment Variables](#environment-variables)
 - [Docker Volumes](#docker-volumes)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -30,6 +39,7 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 - [Project Structure](#project-structure)
 - [API Endpoints](#api-endpoints)
 - [Testing](#testing)
+- [Known Limitations & Roadmap](#known-limitations--roadmap)
 - [License](#license)
 
 ## Features
@@ -37,15 +47,22 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 
 ### Streaming & Encoding
 - **GPU Acceleration** – Uses NVIDIA NVENC for ultra-fast encoding (20x faster than CPU)
-- **Dual Codec Support** – Generates both H.264 (universal) and HEVC (GPU-accelerated on Windows) with automatic client-side selection
 - **CMAF / fMP4** – Modern streaming format with `.m4s` segments and `init.mp4` files
-- **Adaptive Bitrate Streaming** – 7 quality levels (144p to 1440p) with automatic switching
+- **Adaptive Bitrate Streaming** – Up to 7 quality levels (144p to 1440p) with automatic switching
 - **Quality Selection** – Choose which qualities to encode (default: 480p, 720p, 1080p, 1440p) to save processing time
 - **Parallel Encoding** – Up to 3 qualities encoded simultaneously with `p-limit`
+
+### DRM / Content Protection
+- **HLS with AES-128** – Whole-segment encryption via **Shaka Packager**, compatible with HLS.js (no EME required)
+- **DASH with ClearKey + EME** – CENC `cbcs` encryption via **Bento4**, played back through the browser's Encrypted Media Extensions API
+- **Separate License Service** – A standalone Python + FastAPI microservice backed by SQLite that stores KID/KEY pairs and serves decryption keys on demand
+- **Per-Video Keys** – Each video gets a fresh 128-bit KID/KEY pair generated at processing time
+- **Multi-Format Delivery** – Both formats are produced from the same intermediate MP4s, stored in separate prefixes in object storage
 
 ### Audio & Subtitles
 - **Multi-Audio Support** – Handles videos with multiple audio tracks (languages, commentary, etc.)
 - **Subtitles** – Extracts subtitles to WebVTT with manual parsing and language selection
+- **Subtitle Wrapping** – Each `.vtt` is wrapped in a minimal `.m3u8` playlist so HLS.js can consume it as a `SUBTITLES` group
 
 ### Job Queue & Resilience
 - **Persistent Job Queue** – BullMQ + Redis for transcoding jobs that survive server restarts
@@ -55,6 +72,13 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 - **Cancel Jobs** – Cancel running or queued jobs via `AbortController` (kills FFmpeg cleanly)
 - **FIFO Processing** – Worker processes one video at a time (internal qualities still run in parallel)
 - **Temp Cleanup** – Upload files and intermediate outputs are deleted after successful processing
+
+### Storage
+
+- **SQLite Metadata Store** – Video metadata is persisted in a local SQLite database (`backend/data/videos.db`) via `better-sqlite3`, with WAL mode enabled for concurrent reads. Replaces the previous `videos.json` flat file.
+- **MinIO (S3-compatible)** – All HLS and DASH assets are uploaded to MinIO after processing
+- **Backend Proxy** – The backend streams assets from MinIO via `/api/hls/*` and `/api/dash/*` (no direct browser-to-MinIO access)
+- **Tuned Cache Headers** – Playlists are `no-cache`, segments are `public, max-age=31536000, immutable`
 
 ### Real-Time Updates
 - **Server-Sent Events (SSE)** – Live progress and video list updates (no polling)
@@ -67,17 +91,76 @@ A self-hosted HLS (HTTP Live Streaming) video streaming service with GPU acceler
 - **Status Labels** – Every video shows its state: `Queued`, `Processing`, `Ready`, `Failed`, `Missing`
 - **Playback Guard** – Only `Ready` videos can be played; others show an explanatory message
 - **Bulk Delete** – Select and delete multiple videos at once
+- **DRM Format Badge** – The player shows a live indicator of the active backend: `DASH · ClearKey` or `HLS · AES-128`
 
 ### Player
-- **Custom Video Player** – Built with HLS.js, with quality, audio, subtitle, and speed selectors
+- **Dual Backend Player** – Plays HLS via HLS.js and DASH via dash.js, with automatic capability detection
+- **Format Override** – Manual selector to force HLS or DASH for debugging
+- **Quality / Audio / Subtitle Selectors** – Unified controls that adapt to whichever backend is active
 - **Sprite Sheet Thumbnails** – 40 thumbnails (160×90) in a sprite sheet with VTT coordinates
 - **Hover Preview** – Thumbnail preview on the progress bar showing the exact frame at that position
-- **Buffer Optimization** – Tuned HLS.js config for VOD (buffer length, back-buffer, ABR EWMA for VoD)
-- **Cache Headers** – Immutable segments (1 year) and no-cache playlists for optimal browser caching
+- **Buffer Optimization** – Tuned HLS.js and dash.js configs for VOD
+- **Keyboard Shortcuts** – Play/pause, seek, mute, fullscreen
 
 ### Infrastructure
-- **Dockerized** – Run the entire stack with a single command
+- **Dockerized** – Run backend, frontend, Redis, and MinIO with a single command
 - **Redis Persistence** – AOF enabled for job durability across restarts
+- **MinIO Persistence** – Volume-backed object storage
+
+
+## DRM Architecture
+
+### Overview
+
+```
+Upload → BullMQ Worker
+  │
+  ├─ 1. FFmpeg: source → MP4 intermediates
+  │       (video per quality + audio + thumbnails + subtitles)
+  │
+  ├─ 2. Generate KID/KEY (16 bytes each)
+  │
+  ├─ 3. Register KID/KEY with the License Service (POST /api/keys)
+  │
+  ├─ 4. Package DRM variants:
+  │       ├─ Shaka Packager → HLS encrypted with AES-128
+  │       │    (playlist references /api/license/:kid as the key URI)
+  │       └─ Bento4 mp4-dash.py → DASH encrypted with ClearKey (cbcs)
+  │            (MPD includes ClearKey ContentProtection + default_KID)
+  │
+  └─ 5. Upload both to MinIO
+          ├─ hls/{videoId}/...   (AES-128)
+          └─ dash/{videoId}/...  (ClearKey)
+```
+
+### HLS (AES-128 whole-segment)
+
+- Packaged by **Shaka Packager** v3.9.1+
+- Command: `--protection_scheme aes128 --clear_lead 0`
+- Produces `#EXT-X-KEY:METHOD=AES-128,URI="<license>/api/license/<kid>"`
+- The player fetches the raw 16-byte key via `GET /api/license/:kid` (no EME involved)
+- Compatible with HLS.js across all modern browsers
+
+### DASH (ClearKey + EME)
+
+- Packaged by **Bento4** (`mp4-dash.py`)
+- Command: `--clearkey --encryption-cenc-scheme=cbcs --clearkey-license-uri=<license>`
+- Produces `<ContentProtection schemeIdUri="urn:uuid:e2719d58-a985-b3c9-781a-b030af78d30e" value="ClearKey1.0">` in the MPD
+- The player uses **EME** (Encrypted Media Extensions) to negotiate with the browser's CDM
+- The license is fetched via `POST /api/license` with the KIDs as base64url in the body
+- Requires a browser with ClearKey EME support (Chrome, Edge, Firefox)
+
+### License Service
+
+Separate Python microservice (`license-service/`) built with FastAPI and SQLite.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/keys` | Register a KID/KEY pair (called by the worker) |
+| `GET` | `/api/keys/{kid}` | Get metadata for a KID (no secret) |
+| `GET` | `/api/license/{kid}` | Return the raw 16-byte key (AES-128 for HLS) |
+| `POST` | `/api/license` | Return W3C ClearKey JSON (EME for DASH) |
 
 ## GPU Acceleration (NVENC)
 
@@ -85,12 +168,14 @@ This project supports GPU acceleration using NVIDIA NVENC for **local developmen
 
 ### Codec Decision Logic
 
-| Platform | GPU | HEVC Support | Encoder Used |
-|----------|-----|--------------|--------------|
-| Windows | NVIDIA | Yes | `hevc_nvenc` (HEVC) + `h264_nvenc` (H.264) |
-| Windows | NVIDIA | No | `h264_nvenc` (H.264) |
-| Windows | No | - | `libx264` (CPU) |
-| Linux | Any | - | `libx264` (CPU) |
+| Platform | GPU | Encoder Used |
+|----------|-----|--------------|
+| Windows | NVIDIA | `h264_nvenc` |
+| Windows | No | `libx264` |
+| Linux | Any | `libx264` |
+
+
+**Note:** HEVC (`hevc_nvenc`) generation was temporarily removed during the DRM refactor. The previous pipeline generated dual-codec variants (H.264 + HEVC) for every quality. See [Known Limitations & Roadmap](#known-limitations--roadmap).
 
 **Important:** When running with Docker (the default deployment method), the container uses the CPU encoder (`libx264`). This is because:
 
@@ -109,18 +194,31 @@ The application will automatically fall back to CPU if GPU is not available.
 
 **Backend**
 - Node.js + Express + TypeScript
-- FFmpeg with NVENC support (H.264 + HEVC)
+- FFmpeg with NVENC support (H.264)
 - fluent-ffmpeg for ffprobe
 - Multer for file uploads
-- **p-limit** for concurrent processing control
+- **p-limit** for concurrent quality processing
 - **BullMQ** for the job queue
 - **Redis** for queue persistence and job state
+- **SQLite** (`better-sqlite3`) for video metadata
 - **Server-Sent Events (SSE)** for real-time progress
+- **AWS SDK v3 S3 client** for MinIO object storage
+
+**DRM Toolchain**
+- **Shaka Packager** v3.9.1+ — HLS packaging and AES-128 encryption
+- **Bento4** (`mp4fragment.exe` + `mp4-dash.py`) — DASH packaging and ClearKey encryption
+- **Python 3.11+** — Required at runtime for `mp4-dash.py`
+
+**License Service**
+- Python 3.11 + FastAPI + Uvicorn
+- SQLAlchemy + SQLite
+- Pydantic schemas
 
 **Frontend**
 - React 19 + TypeScript
-- HLS.js for video playback (native fMP4/CMAF support)
-- Custom hooks for video controls, subtitles, thumbnails, SSE, and job state
+- **HLS.js** for HLS playback (fMP4/CMAF)
+- **dash.js** v5 for DASH playback (ClearKey + EME)
+- Custom hooks for video controls, subtitles, thumbnails, SSE, job state, and player backend selection
 
 **Infrastructure**
 - Docker & Docker Compose
@@ -137,51 +235,92 @@ The application will automatically fall back to CPU if GPU is not available.
 
 ## Prerequisites
 
-- Node.js (v18+) – for local development
-- FFmpeg with NVENC support – for GPU acceleration (optional)
-- Docker & Docker Compose – for containerized deployment
-- Redis (or use the Docker Compose Redis service) – required for the job queue
-- NVIDIA GPU (optional, but recommended for GPU acceleration)
+- **Node.js** v20+ — for backend and frontend
+- **FFmpeg** with NVENC support — optional, for GPU acceleration
+- **Python 3.11+** — required at runtime for Bento4's `mp4-dash.py`
+- **Docker & Docker Compose** — for Redis, MinIO, and containerized deployment
+- **Shaka Packager** v3.9.1+ — for HLS packaging
+- **Bento4 SDK** — for DASH packaging
+- **NVIDIA GPU** — optional, for GPU-accelerated encodin
 
 ## Quick Start
 
-### Option 1: Docker
+### Option 1: Full Docker
 
 1. Clone the repository:
-```bash
-git clone https://github.com/rtagliaviaz/video-streaming-service.git
-cd video-streaming-service
-```
+   ```bash
+   git clone https://github.com/rtagliaviaz/video-streaming-service.git
+   cd video-streaming-service
+   ```
 
-2. Create the .env file in the root directory:
+2. Create the `.env` file in `backend/`:
 
-```env
-NODE_ENV=production
-PORT=3001
-VIDEO_FOLDER_PATH=./uploads
-OUTPUT_FOLDER_PATH=./hls
-LOG_LEVEL=info
-REDIS_HOST=redis
-REDIS_PORT=6379
-```
+   ```env
+   NODE_ENV=production
+   PORT=3001
+   VIDEO_FOLDER_PATH=./uploads
+   OUTPUT_FOLDER_PATH=./hls
+   LOG_LEVEL=info
 
-3. Start the services:
+   REDIS_HOST=localhost
+   REDIS_PORT=6379
 
-```bash
-docker-compose up -d --build
-```
+   MINIO_ENDPOINT=http://localhost:9000
+   MINIO_ACCESS_KEY=minioadmin
+   MINIO_SECRET_KEY=minioadmin
+   MINIO_BUCKET=hls
+
+   DRM_ENABLED=true
+   LICENSE_SERVICE_URL=http://localhost:4000
+   SHAKA_PACKAGER_PATH=./bin/packager.exe
+   BENTO4_MP4DASH_SCRIPT=./utils/mp4-dash.py
+   BENTO4_MP4FRAGMENT_PATH=./bin/mp4fragment.exe
+   BENTO4_PYTHON_BIN=python
+   ```
+
+3. Start everything:
+
+   ```bash
+   docker-compose up -d --build
+   ```
 
 4. Open your browser at http://localhost:5173
 
-### Option 2: Local Development 
+### Option 2: Local Development
 
-- Redis must be running locally (or in Docker). if using Docker:
+This is the recommended setup for development. Redis and MinIO run in Docker, while the backend, frontend, and License Service run locally with hot reload.
+
+#### 2.1 — Start infrastructure (Redis + MinIO)
 
 ```bash
-docker run -d --name redis-dev -p 6379:6379 redis:7-alpine
+docker-compose up -d redis minio
 ```
 
-#### Backend
+Verify both are healthy:
+
+```bash
+docker-compose ps
+```
+
+MinIO console: http://localhost:9001 (`minioadmin` / `minioadmin`)
+
+#### 2.2 — Start the License Service (Python)
+
+The DRM license server is a separate Python microservice.
+
+```bash
+cd license-service
+conda create -n drm-license python=3.11 -y
+conda activate drm-license
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 4000
+```
+
+Verify it responds at http://localhost:4000/api/health
+
+#### 2.3 — Start the backend
+
+In a new terminal:
 
 ```bash
 cd backend
@@ -189,13 +328,43 @@ npm install
 npm run dev
 ```
 
-#### Frontend
+The backend listens on http://localhost:3001 and creates the SQLite database automatically at `backend/data/videos.db` on first start.
+
+Optional: inspect the database with [DB Browser for SQLite](https://sqlitebrowser.org/) or the `sqlite3` CLI:
+
+```bash
+sqlite3 backend/data/videos.db "SELECT id, original_name, status FROM videos;"
+```
+
+#### 2.4 — Start the frontend
+
+In a new terminal:
 
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
+Open your browser at http://localhost:5173
+
+#### Development flow summary
+
+| Service | Location | Port |
+|---------|----------|------|
+| Redis | Docker | 6379 |
+| MinIO (S3 API) | Docker | 9000 |
+| MinIO (Console) | Docker | 9001 |
+| License Service | Local (Python) | 4000 |
+| Backend | Local (Node) | 3001 |
+| Frontend | Local (Vite) | 5173 |
+
+**Why run the backend outside Docker?** Two reasons:
+
+1. **GPU acceleration (NVENC):** The Docker image is Alpine-based and does not include NVIDIA drivers. Running the backend natively on Windows lets FFmpeg use `h264_nvenc` directly.
+2. **Third-party binaries:** Shaka Packager and Bento4 are invoked from `backend/bin/`. Running the backend natively means you can place the Windows executables there without rebuilding the image.
+
+For deployment scenarios where GPU acceleration is not required, the full Docker setup (Option 1) works on any Linux host with a standard CPU encoder.
 
 ## Environment Variables
 
@@ -204,21 +373,66 @@ npm run dev
 | `NODE_ENV` | Node environment | `production` |
 | `PORT` | Backend port | `3001` |
 | `VIDEO_FOLDER_PATH` | Upload folder path | `./uploads` |
-| `OUTPUT_FOLDER_PATH` | HLS output folder path | `./hls` |
+| `OUTPUT_FOLDER_PATH` | HLS/DASH output folder path | `./hls` |
 | `LOG_LEVEL` | Log level (debug, info, warn, error) | `info` |
 | `REDIS_HOST` | Redis hostname | `localhost` |
 | `REDIS_PORT` | Redis port | `6379` |
+| `MINIO_ENDPOINT` | MinIO S3 endpoint | `http://localhost:9000` |
+| `MINIO_ACCESS_KEY` | MinIO access key | `minioadmin` |
+| `MINIO_SECRET_KEY` | MinIO secret key | `minioadmin` |
+| `MINIO_BUCKET` | MinIO bucket name | `hls` |
+| `DRM_ENABLED` | Enable DRM encryption | `true` |
+| `LICENSE_SERVICE_URL` | URL of the License Service | `http://localhost:4000` |
+| `SHAKA_PACKAGER_PATH` | Path to Shaka Packager executable | `./bin/packager.exe` |
+| `BENTO4_MP4DASH_SCRIPT` | Path to Bento4's `mp4-dash.py` | `./utils/mp4-dash.py` |
+| `BENTO4_MP4FRAGMENT_PATH` | Path to `mp4fragment` executable | `./bin/mp4fragment.exe` |
+| `BENTO4_PYTHON_BIN` | Python interpreter for `mp4-dash.py` | `python` |
+
+
+## Third-Party Binaries
+
+The backend relies on two external tools that are **not committed to the repository** (they live in `backend/bin/` and `backend/utils/`, which are gitignored).
+
+### Shaka Packager
+
+Download from https://github.com/shaka-project/shaka-packager/releases and place `packager.exe` (Windows) or `packager` (Linux/macOS) in `backend/bin/`.
+
+### Bento4 SDK
+
+Download the SDK from https://www.bento4.com/downloads/ (e.g. `Bento4-SDK-1-6-0-641.x86_64-microsoft-win32.zip`).
+
+1. Extract the SDK.
+2. Copy the contents of `bin/` into `backend/bin/`:
+   - `mp4fragment.exe` (required)
+   - `mp4info.exe`, `mp4dump.exe`, `mp4edit.exe` (optional, useful for debug)
+3. Copy the entire `utils/` folder into `backend/utils/`:
+   - `mp4-dash.py` (required)
+   - `mp4utils.py` (required)
+   - Other `.py` helpers
+
+**Important:** Bento4 does **not** ship a compiled `mp4dash.exe`. The dash packager is a Python script (`mp4-dash.py`) that must be invoked with a Python interpreter. Make sure `python` is on your PATH, or set `BENTO4_PYTHON_BIN` in `.env` to the full path of your Python executable.
+
+### Verify installation
+
+```bash
+cd backend
+./bin/packager.exe --version
+./bin/mp4fragment.exe --version
+python ./utils/mp4-dash.py --help
+```
 
 ## Docker Volumes
 
-- `./uploads` – Temporary uploaded video files (automatically cleaned after processing)
-- `./hls` – Generated HLS files (playlists, segments, thumbnails, subtitles)
+- `./uploads` – Temporary uploaded video files (cleaned after processing)
+- `./hls` – Temporary working directory for FFmpeg/Shaka/Bento4 (cleaned after upload to MinIO)
+- `./minio-data` – MinIO object storage (persists all HLS and DASH assets)
+- `./backend/data` – SQLite database (`videos.db`) with video metadata
 - `redis-data` – Redis AOF file (persists the job queue across container restarts)
 
 ## Keyboard Shortcuts
 
-| Key| Action |
-|----------|-------------|
+| Key | Action |
+|-----|--------|
 | `Space` / `K` | Play / Pause |
 | `F` | Toggle fullscreen |
 | `M` | Toggle mute |
@@ -229,73 +443,81 @@ npm run dev
 ## How It Works
 
 ### 1. Upload & Enqueue
+
 The user uploads one or more video files through the web interface, selecting the qualities to encode. The backend:
 
-1. Saves the uploaded file to `uploads/`.
-2. Registers metadata in `videos.json` with status: `'queued'`.
-3. Adds a job to the BullMQ queue (`video-processing`) with `attempts: 3` and exponential backoff
-4. Returns the `jobId` and `videoId` to the client
+1. Saves the uploaded file to `uploads/`
+2. Inserts metadata into the SQLite database with `status: 'queued'`
+3. Adds a job to the BullMQ queue with `attempts: 3` and exponential backoff
+4. Returns `jobId` and `videoId` to the client
 
-The client opens an SSE connection to `/api/events/:jobId` to receive progress updates.
+The client opens an SSE connection to `/api/events/:jobId` for progress updates.
 
 ### 2. GPU Detection
+
 The backend checks:
 
 - `nvidia-smi` for NVIDIA GPU presence
-- `ffmpeg -encoders` for `h264_nvenc` and `hevc_nvenc` availability
+- `ffmpeg -encoders` for `h264_nvenc` availability
 - Platform (Windows or Linux)
 
-Based on this, it selects the appropriate encoder strategy:
-
-| Platform | GPU | HEVC Support | Encoder Used |
-|----------|-----|--------------|--------------|
-| Windows | NVIDIA | Yes | `hevc_nvenc` (HEVC) + `h264_nvenc` (H.264) |
-| Windows | NVIDIA | No | `h264_nvenc` (H.264) |
-| Windows | No | - | `libx264` (CPU) |
-| Linux | Any | - | `libx264` (CPU) |
+Based on this, it selects the appropriate encoder strategy (see the GPU table above).
 
 ### 3. Processing Pipeline
+
 The BullMQ worker picks up jobs one at a time (`concurrency: 1`). For each job:
 
-- **Cleanup** – Removes the previous output directory if the job is a retry.
-- **Thumbnails** – Generates 40 thumbnails (160×90) plus a sprite sheet (8×5 grid) and a VTT file with coordinates.
-- **Audio Extraction** – Extracts all audio tracks and creates separate HLS playlists using fMP4.
-- **Subtitle Extraction** – Extracts subtitles to WebVTT.
-- **Quality Encoding** – Encodes the selected qualities in parallel (up to 3 at a time with `p-limit`):
-  - For each quality, generates H.264 (always)
-  - If HEVC is available, generates HEVC in parallel
-  - Uses fMP4 (`.m4s` + `init_*.mp4`)
-- **Master Playlist** – Generates `index.m3u8` with `CODECS` attributes, HEVC bandwidth adjustments (70% of H.264), and `AUDIO`/`SUBTITLES` groups.
-- **Cleanup** – Deletes the original upload and intermediate outputs on success.
-- **Metadata** – Updates `videos.json` to `status: 'completed'` and emits a v`ideos-changed` event.
+1. **Cleanup** – Removes the previous output directory if the job is a retry
+2. **Thumbnails** – 40 thumbnails (160×90) + sprite sheet (8×5 grid) + VTT coordinates
+3. **Subtitles** – Extracted to WebVTT
+4. **Audio Extraction** – All audio tracks extracted to MP4
+5. **Video Transcode** – Selected qualities encoded in parallel (up to 3)
+6. **DRM Key Generation** – A fresh 128-bit KID/KEY pair is generated and registered with the License Service
+7. **HLS Packaging** – Shaka Packager encrypts the MP4s with AES-128
+8. **DASH Packaging** – Bento4 encrypts the MP4s with ClearKey (cbcs)
+9. **Upload** – Both formats are uploaded to MinIO under `hls/{videoId}/` and `dash/{videoId}/`
+10. **Cleanup** – Local temp files are deleted
+11. **Metadata** – SQLite database updated to `status: 'completed'` with `kid` and `formats`
 
 ### 4. Queue Resilience
 
-- **Persistence** – Jobs are stored in Redis. If the backend crashes, the queue survives.
-- **Auto-Resume** – On startup, the worker re-attaches to the queue and resumes pending jobs.
-- **Retry** – Failed jobs retry automatically up to 3 times with exponential backoff.
-- **Cancel** – Active jobs can be cancelled via an `AbortController` that kills the FFmpeg process.
-Manual Retry – Failed jobs can be retried from the UI.
+- **Persistence** – Jobs are stored in Redis. If the backend crashes, the queue survives
+- **Auto-Resume** – On startup, the worker re-attaches and resumes pending jobs
+- **Retry** – Failed jobs retry automatically up to 3 times with exponential backoff
+- **Cancel** – Active jobs can be cancelled via `AbortController` (kills FFmpeg, Shaka, Bento4)
+- **Manual Retry** – Failed jobs can be retried from the UI
 
 ### 5. Real-Time Progress
+
 The frontend subscribes to `/api/events/:jobId` via SSE. The backend:
 
-1. Sends the current progress immediately (recovered from Redis) when the connection opens.
-2. Streams progress events as the worker emits them.
-3. Closes the connection when the job completes or fails.
+1. Sends the current progress immediately (recovered from Redis) when the connection opens
+2. Streams progress events as the worker emits them
+3. Closes the connection when the job completes or fails
 
-The video list subscribes to `/api/videos/events`, which emits a `videos-changed` event whenever metadata changes. The list refetches automatically.
+The video list subscribes to `/api/videos/events` and refetches when metadata changes.
 
-### 6. Thumbnail Preview
-The frontend loads the VTT file and sprite sheet. When the user hovers over the progress bar, the player calculates the corresponding time, looks up the correct tile in the VTT, and displays that portion of the sprite sheet as a preview.
+### 6. Streaming & Playback
 
-### 7. Streaming & Playback
-HLS files are served via Express static middleware with tuned `Cache-Control` headers:
+HLS and DASH assets are served through backend proxies:
 
-- `.m3u8` (playlists): `no-cache, no-store, must-revalidate` (always fresh)
-- `.m4s`, `.mp4`, `.vtt`, `.jpg`, `.png`: public, max-age=31536000, immutable
+- `/api/hls/:videoId/*` → reads from `hls/{videoId}/...` in MinIO
+- `/api/dash/:videoId/*` → reads from `dash/{videoId}/...` in MinIO
 
-The frontend player (HLS.js) streams the video with adaptive bitrate and a VOD-tuned buffer configuration.
+Both proxies forward the original `Content-Type`, `Cache-Control`, `ETag`, and `Last-Modified` headers set at upload time.
+
+- `.m3u8` / `.mpd` (playlists): `no-cache, no-store, must-revalidate`
+- `.m4s`, `.mp4`, `.vtt`, `.jpg`, `.png`: `public, max-age=31536000, immutable`
+
+**Player backend selection:**
+
+- If `dashUrl` is available **and** the browser supports ClearKey EME → **DASH via dash.js**
+- Otherwise → **HLS via HLS.js**
+- The user can override the choice from a dropdown in the player controls
+
+### 7. Thumbnail Preview
+
+The frontend loads the VTT file and sprite sheet. When the user hovers over the progress bar, the player calculates the corresponding time, looks up the correct tile in the VTT, and displays that portion of the sprite sheet.
 
 ## Project Structure
 
@@ -310,18 +532,27 @@ video-streaming-service/
 │   │   │   │   ├── videoInfo.ts
 │   │   │   │   ├── gpuDetector.ts
 │   │   │   │   ├── thumbnailGenerator.ts
-│   │   │   │   ├── hlsGenerator.ts
-│   │   │   │   └── playlistGenerator.ts
-│   │   │   ├── queueService.ts        # BullMQ queue + worker
-│   │   │   ├── eventEmitter.ts        # Global EventEmitter for SSE
-│   │   │   └── videoMetadata.ts       # Metadata persistence
+│   │   │   │   ├── transcodeToMp4.ts       # FFmpeg → MP4 intermediates
+│   │   │   │   ├── hlsEncryptor.ts         # Shaka Packager → encrypted HLS
+│   │   │   │   └── dashPackager.ts         # Bento4 → encrypted DASH
+│   │   │   ├── queueService.ts             # BullMQ queue + worker
+│   │   │   ├── eventEmitter.ts             # Global EventEmitter for SSE
+│   │   │   ├── db.ts                       # SQLite connection + schema
+│   │   │   ├── videoRepository.ts          # SQL queries for video metadata
+│   │   │   ├── videoMetadata.ts            # VideoMetadata type definition
+│   │   │   ├── drmService.ts               # KID/KEY generation + License Service client
+│   │   │   └── s3Service.ts                # MinIO upload, get, delete
 │   │   ├── controllers/
 │   │   │   ├── videoController.ts
-│   │   │   └── queueController.ts     # SSE endpoints
+│   │   │   └── queueController.ts          # SSE endpoints
 │   │   ├── routes.ts
 │   │   ├── config.ts
 │   │   ├── index.ts
 │   │   └── logger.ts
+│   ├── data/                               # SQLite database (gitignored)
+│   │   └── videos.db
+│   ├── bin/                                # Shaka Packager + Bento4 binaries (gitignored)
+│   ├── utils/                              # Bento4 Python scripts (gitignored)
 │   ├── Dockerfile
 │   └── package.json
 ├── frontend/
@@ -329,6 +560,11 @@ video-streaming-service/
 │   │   ├── components/
 │   │   │   ├── VideoList/
 │   │   │   ├── VideoPlayer/
+│   │   │   │   ├── hooks/
+│   │   │   │   │   ├── useHLS.ts
+│   │   │   │   │   ├── useDASH.ts
+│   │   │   │   │   └── usePlayerBackend.ts
+│   │   │   │   └── ...
 │   │   │   └── VideoUploader/
 │   │   ├── hooks/
 │   │   │   ├── useSSE.ts
@@ -340,19 +576,25 @@ video-streaming-service/
 │   │   └── main.tsx
 │   ├── Dockerfile
 │   └── package.json
+├── license-service/                        # Python + FastAPI DRM license server
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── database.py
+│   │   ├── models.py
+│   │   ├── schemas.py
+│   │   └── routes.py
+│   └── requirements.txt
 ├── docker-compose.yml
-├── .env
 └── README.md
 ```
-
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/upload` | Upload a video and enqueue it for processing |
-| `GET` | `/api/videos` | List all videos with metadata and status |
-| `DELETE` | `/api/videos/:videoId` | Delete a video and its files |
+| `GET` | `/api/videos` | List all videos with metadata, status, `hlsUrl`, `dashUrl`, and `kid` |
+| `DELETE` | `/api/videos/:videoId` | Delete a video and its HLS + DASH assets |
 | `GET` | `/api/video/info/:videoId` | Get info about a specific video |
 | `GET` | `/api/jobs` | List jobs (with optional `states` filter) |
 | `GET` | `/api/jobs/:jobId` | Get the status of a specific job |
@@ -362,27 +604,38 @@ video-streaming-service/
 | `GET` | `/api/events/:jobId` | SSE stream for a specific job's progress |
 | `GET` | `/api/videos/events` | SSE stream for video list changes |
 | `GET` | `/api/gpu/info` | Get GPU availability and encoder info |
-| `GET` | `/api/stream/:videoId` | Get the master playlist (used by the player) |
-| `GET` | `/api/segment/:videoId/:segment` | Get a segment, playlist, or thumbnail |
+| `GET` | `/api/hls/:videoId/*` | Proxy to MinIO `hls/{videoId}/...` |
+| `GET` | `/api/dash/:videoId/*` | Proxy to MinIO `dash/{videoId}/...` |
+
+**License Service (separate process, port 4000):**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Liveness check |
+| `POST` | `/api/keys` | Register a new KID/KEY pair |
+| `GET` | `/api/keys/:kid` | Get metadata for a KID |
+| `GET` | `/api/license/:kid` | Raw 16-byte key (AES-128 for HLS) |
+| `POST` | `/api/license` | W3C ClearKey JSON (EME for DASH) |
 
 ## Testing
 
-The project includes comprehensive unit and integration tests with Vitest.
+The project includes unit and integration tests with Vitest.
 
 ### Unit Tests
 
-- **`gpuDetector`** – GPU detection, HEVC support check, and fallback logic
-- **`hlsGenerator`** – Pipeline execution, progress stages, FFmpeg arguments, and error handling
-- **`playlistGenerator`** – Master playlist generation with codec variants, CODECS attributes, and bandwidth adjustments
-- **`thumbnailGenerator`** – Sprite sheet creation, VTT generation, and individual thumbnail extraction
-- **`videoInfo`** – Metadata extraction, framerate parsing, GOP size calculation, and duration formatting
+- **`gpuDetector`** – GPU detection and fallback logic
+- **`transcodeToMp4`** – Transcode pipeline execution and progress stages
+- **`hlsEncryptor`** – Shaka Packager integration and playlist generation
+- **`dashPackager`** – Bento4 integration and manifest generation
+- **`thumbnailGenerator`** – Sprite sheet creation, VTT generation, individual thumbnail extraction
+- **`videoInfo`** – Metadata extraction, framerate parsing, GOP size calculation
 
 ### Integration Tests
 
-- API endpoints (`/api/upload`, `/api/events`, `/api/videos`, `/api/stream`, etc.)
+- API endpoints (`/api/upload`, `/api/events`, `/api/videos`, etc.)
 - File serving (`.m4s`, `.mp4`, `.vtt`, `.m3u8`)
 - Error handling and validation
-- SSE (Server-Sent Events) progress streaming
+- SSE progress streaming
 
 ### Run Tests
 
@@ -390,6 +643,14 @@ The project includes comprehensive unit and integration tests with Vitest.
 cd backend
 npm test
 ```
+
+## Known Limitations & Roadmap
+
+### HEVC support (parked during DRM refactor)
+
+An earlier version of the pipeline generated **dual-codec variants** (H.264 + HEVC) for every quality level, using `hevc_nvenc` on Windows with NVIDIA GPUs. This let clients pick HEVC for ~30% bandwidth savings when supported (Safari natively, Chrome/Edge via extension).
+
+During the DRM refactor (moving from a single FFmpeg pass to `transcodeToMp4` + `hlsEncryptor` + `dashPackager`), HEVC generation was temporarily removed to reduce surface area while validating the ClearKey/AES-128 flows. The legacy implementation is preserved in the git history for reference.
 
 
 ## License

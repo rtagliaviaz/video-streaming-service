@@ -3,12 +3,15 @@ import IORedis from 'ioredis';
 import path from 'path';
 import fs from 'fs';
 import { config } from '../config';
-import { generateHLS } from './ffmpeg/hlsGenerator';
 import { logger } from '../logger';
-import { metadataService } from './videoMetadata';
+import { getVideo, addOrUpdateVideo } from './videoRepository';
 import { ProgressInfo } from './ffmpeg/types';
 import { progressEmitter } from './eventEmitter';
 import { uploadDirectory, ensureBucket } from './s3Service';
+import { transcodeToMp4 } from './ffmpeg/transcodeToMp4';
+import { encryptHLS } from './ffmpeg/hlsEncryptor';
+import { packageDASH } from './ffmpeg/dashPackager';
+import { generateDrmKey, registerKeyWithLicenseService } from './drmService';
 
 const connection = new IORedis({
   host: config.redis.host,
@@ -85,30 +88,79 @@ export const videoWorker = new Worker(
     };
 
     try {
-      const existingStart = metadataService.getVideo(videoId);
+      const existingStart = getVideo(videoId);
       if (existingStart) {
-        metadataService.addOrUpdateVideo({
+        addOrUpdateVideo({
           ...existingStart,
           status: 'processing',
         });
       }
       progressEmitter.emit('videos-changed');
 
-      
-      const result = await generateHLS(
+      const drmKey = generateDrmKey(videoId);
+      logger.info(`[bullmq] Generated KID ${drmKey.kid} for video ${videoId}`);
+
+      if (config.drm.enabled) {
+        await registerKeyWithLicenseService(drmKey);
+      }
+
+      const transcode = await transcodeToMp4(
         videoPath,
         outputDir,
         videoId,
-        updateProgress,
         qualities,
+        updateProgress,
         controller.signal
       );
+      logger.info(`[bullmq] Transcode done for ${videoId}`);
+
+      await job.updateProgress(86);
+      progressEmitter.emit('progress', {
+        jobId: job.id,
+        progress: 86,
+        stage: 'hls-packaging',
+        details: {},
+      });
+
+      const hlsResult = await encryptHLS({
+        transcode,
+        outputDir,
+        videoId,
+        kid: drmKey.kid,
+        keyHex: drmKey.keyHex,
+        licenseBaseUrl: config.drm.licenseServiceUrl,
+        signal: controller.signal,
+      });
+      logger.info(`[bullmq] HLS encryption done for ${videoId}`);
+
+      await job.updateProgress(93);
+      progressEmitter.emit('progress', {
+        jobId: job.id,
+        progress: 93,
+        stage: 'dash-packaging',
+        details: {},
+      });
+
+      const dashResult = await packageDASH({
+        transcode,
+        outputDir,
+        videoId,
+        kid: drmKey.kid,
+        keyHex: drmKey.keyHex,
+        licenseServiceUrl: config.drm.licenseServiceUrl,
+        signal: controller.signal,
+      });
+      logger.info(`[bullmq] DASH packaging done for ${videoId}`);
 
       jobAbortControllers.delete(job.id!);
 
+      await job.updateProgress(96);
+      logger.info(`[bullmq] Uploading HLS to MinIO for ${videoId}`);
+      await uploadDirectory(hlsResult.hlsDir, `hls/${videoId}`);
 
-      logger.info(`[bullmq] Uploading HLS to MinIO for video ${videoId}`);
-      await uploadDirectory(outputPath, videoId);
+      await job.updateProgress(98);
+      logger.info(`[bullmq] Uploading DASH to MinIO for ${videoId}`);
+      await uploadDirectory(dashResult.dashDir, `dash/${videoId}`);
 
       try {
         fs.rmSync(outputPath, { recursive: true, force: true });
@@ -126,12 +178,14 @@ export const videoWorker = new Worker(
         logger.warn({ err, videoPath }, '[bullmq] Failed to delete temp upload');
       }
 
-      const existing = metadataService.getVideo(videoId);
+      const existing = getVideo(videoId);
       if (existing) {
-        metadataService.addOrUpdateVideo({
+        addOrUpdateVideo({
           ...existing,
           status: 'completed',
           error: undefined,
+          kid: drmKey.kid,
+          formats: ['hls', 'dash'],
         });
       }
       progressEmitter.emit('videos-changed');
@@ -153,7 +207,12 @@ export const videoWorker = new Worker(
       logger.info(
         `[bullmq] Job ${job.id} finished in ${((Date.now() - queuedAt) / 1000).toFixed(1)}s total`
       );
-      return result;
+
+      return {
+        hls: hlsResult,
+        dash: dashResult,
+        kid: drmKey.kid,
+      };
     } catch (err) {
       const wasCancelled = controller.signal.aborted;
       jobAbortControllers.delete(job.id!);
@@ -192,9 +251,9 @@ videoWorker.on('failed', (job, err) => {
   if (job) {
     logger.error(`[bullmq] Job ${job.id} failed: ${err.message}`);
     const videoId = job.data.videoId;
-    const existing = metadataService.getVideo(videoId);
+    const existing = getVideo(videoId);
     if (existing) {
-      metadataService.addOrUpdateVideo({
+      addOrUpdateVideo({
         ...existing,
         status: 'failed',
         error: err.message,
@@ -320,9 +379,9 @@ export async function cancelVideoJob(jobId: string): Promise<boolean> {
   if (state === 'waiting' || state === 'delayed') {
     await job.remove();
 
-    const existing = metadataService.getVideo(videoId);
+    const existing = getVideo(videoId);
     if (existing) {
-      metadataService.addOrUpdateVideo({
+      addOrUpdateVideo({
         ...existing,
         status: 'failed',
         error: 'Cancelled by user',
@@ -361,9 +420,9 @@ export async function retryVideoJob(jobId: string): Promise<boolean> {
   await job.retry();
 
   const videoId = job.data.videoId;
-  const existing = metadataService.getVideo(videoId);
+  const existing = getVideo(videoId);
   if (existing) {
-    metadataService.addOrUpdateVideo({
+    addOrUpdateVideo({
       ...existing,
       status: 'queued',
       error: undefined,

@@ -13,12 +13,14 @@ export const ProcessingDetails: React.FC<ProcessingDetailsProps> = ({ progressIn
   const getStageLabel = () => {
     switch (stage) {
       case 'idle': return 'Initializing...';
-        case 'audio': return 'Extracting audio tracks';
-        case 'subtitles': return 'Extracting subtitles';
-        case 'thumbnails': return 'Generating thumbnails';
-        case 'qualities': return 'Transcoding video qualities';
-        case 'done': return 'Completed!';
-        default: return 'Processing...';
+      case 'audio': return 'Extracting audio tracks';
+      case 'subtitles': return 'Extracting subtitles';
+      case 'thumbnails': return 'Generating thumbnails';
+      case 'qualities': return 'Transcoding video qualities';
+      case 'hls-packaging': return 'Packaging HLS streams';
+      case 'dash-packaging': return 'Packaging DASH manifest';
+      case 'done': return 'Completed!';
+      default: return 'Processing...';
     }
   };
 

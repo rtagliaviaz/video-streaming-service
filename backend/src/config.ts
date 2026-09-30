@@ -39,6 +39,9 @@ const getDrmConfig = () => ({
     enabled: process.env.DRM_ENABLED !== 'false',
     licenseServiceUrl: process.env.LICENSE_SERVICE_URL || 'http://localhost:4000',
     packagerPath: process.env.SHAKA_PACKAGER_PATH || './bin/packager.exe',
+    mp4dashScript: process.env.BENTO4_MP4DASH_SCRIPT || './utils/mp4-dash.py',
+    mp4fragmentPath: process.env.BENTO4_MP4FRAGMENT_PATH || './bin/mp4fragment.exe',
+    pythonBin: process.env.BENTO4_PYTHON_BIN || 'python',
 });
 
 export const config = {

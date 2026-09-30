@@ -1,14 +1,25 @@
 .env
 minio-data/
 
+#Frontend
+frontend/package-lock.json
 
 # Binaries
 backend/bin/
 backend/test_drm/
 backend/test_output/
+backend/test_dash/
 backend/video_480p.mp4
 backend/audio_0.mp4
+backend/utils/
+backend/todo.md
+backend/serve.py
+backend/payload.json
+backend/test-gpu.cjs
+backend/.env
 
+# SQLite database
+backend/data/
 
 # License Service
 license-service/drm_keys.db

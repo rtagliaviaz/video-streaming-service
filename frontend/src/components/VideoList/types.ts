@@ -8,7 +8,9 @@ export interface Video {
     durationFormatted: string;
     size: number;
     exists: boolean;
-    playlist: string | null;
+    hlsUrl: string | null;
+    dashUrl: string | null;
+    kid: string | null;
     qualities: string[];
     thumbnails: string[] | null;
     status?: 'queued' | 'processing' | 'completed' | 'failed';
@@ -16,7 +18,7 @@ export interface Video {
 }
 
 export interface VideoListProps {
-    onSelectVideo: (videoId: string) => void;
+    onSelectVideo: (video: Video) => void;
     selectedVideoId?: string;
 }
 

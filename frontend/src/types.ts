@@ -5,7 +5,7 @@ export interface QualityStatus {
 
 export interface ProgressInfo {
   percent: number;
-  stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'qualities' | 'done';
+  stage: 'idle' | 'audio' | 'subtitles' | 'thumbnails' | 'qualities' | 'h264' | 'hevc' | 'hls-packaging' | 'dash-packaging' | 'done';
   details?: {
     audioTracksExtracted?: number;
     totalAudioTracks?: number;

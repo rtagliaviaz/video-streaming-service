@@ -12,7 +12,8 @@ import {
     retryVideoJob,
 } from '../services/queueService';
 import { config } from '../config';
-import { metadataService, VideoMetadataService } from '../services/videoMetadata';
+import { VideoMetadataService } from '../services/videoMetadata';
+import { getVideo, getAllVideos, addOrUpdateVideo, deleteVideo as deleteVideoFromDb } from '../services/videoRepository';
 import { logger } from '../logger';
 import { progressEmitter } from '../services/eventEmitter';
 import { getObjectStream, deletePrefix, objectExists  } from '../services/s3Service';
@@ -39,7 +40,7 @@ export const videoController = {
     getVideoInfo: async (req: Request, res: Response) => {
         try {
             const { videoId } = req.params;
-            const metadata = metadataService.getVideo(videoId);
+            const metadata = getVideo(videoId);
 
             if (metadata) {
                 return res.json({
@@ -131,7 +132,7 @@ export const videoController = {
                 subtitleTracks: info.subtitleTracks,
                 status: 'queued' as const,
             };
-            metadataService.addOrUpdateVideo(initialMetadata);
+            addOrUpdateVideo(initialMetadata);
 
             const jobId = await addVideoJob(
                 inputPath,
@@ -144,7 +145,7 @@ export const videoController = {
                 ...initialMetadata,
                 jobId,
             };
-            metadataService.addOrUpdateVideo(updatedMetadata);
+            addOrUpdateVideo(updatedMetadata);
 
             progressEmitter.emit('videos-changed');
 
@@ -238,7 +239,7 @@ export const videoController = {
             return res.status(400).json({ error: 'Missing videoId or filePath' });
         }
 
-        const key = `${videoId}/${filePath}`;
+        const key = `hls/${videoId}/${filePath}`;
 
         try {
             const obj = await getObjectStream(key);
@@ -275,6 +276,50 @@ export const videoController = {
         }
     },
 
+    getDashFile: async (req: Request, res: Response) => {
+        const videoId = req.params[0];
+        const filePath = req.params[1];
+
+        if (!videoId || !filePath) {
+            return res.status(400).json({ error: 'Missing videoId or filePath' });
+        }
+
+        const key = `dash/${videoId}/${filePath}`;
+
+        try {
+            const obj = await getObjectStream(key);
+            if (!obj) {
+                return res.status(404).json({ error: 'File not found' });
+            }
+
+            if (obj.contentType) res.setHeader('Content-Type', obj.contentType);
+            if (obj.contentLength !== undefined) res.setHeader('Content-Length', String(obj.contentLength));
+            if (obj.cacheControl) res.setHeader('Cache-Control', obj.cacheControl);
+            if (obj.etag) res.setHeader('ETag', obj.etag);
+            if (obj.lastModified) res.setHeader('Last-Modified', obj.lastModified.toUTCString());
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            req.on('close', () => {
+                obj.stream.destroy();
+            });
+
+            obj.stream.on('error', (err) => {
+                logger.error({ err, key }, 'Stream error');
+                obj.stream.destroy();
+                if (!res.headersSent) res.status(500).end();
+                else res.end();
+            });
+
+            obj.stream.pipe(res);
+        } catch (error: any) {
+            const isTimeout = error?.name === 'TimeoutError';
+            logger.error({ error: error?.name, key }, 'getDashFile error');
+            if (!res.headersSent) {
+                res.status(isTimeout ? 504 : 500).json({ error: 'Failed to fetch file' });
+            }
+        }
+    },
+
     getQueueStatus: async (req: Request, res: Response) => {
         try {
             const counts = await videoQueue.getJobCounts();
@@ -293,11 +338,12 @@ export const videoController = {
 
     listVideos: async (req: Request, res: Response) => {
         try {
-            const videos = metadataService.getAllVideos();
+            const videos = getAllVideos();
 
             const enrichedVideos = await Promise.all(
                 videos.map(async (video) => {
-                    const exists = await objectExists(`${video.id}/index.m3u8`);
+                    const hlsExists = await objectExists(`hls/${video.id}/master.m3u8`);
+                    const dashExists = await objectExists(`dash/${video.id}/stream.mpd`);
 
                     return {
                         id: video.id,
@@ -306,8 +352,10 @@ export const videoController = {
                         duration: video.duration,
                         durationFormatted: video.durationFormatted || '00:00:00',
                         size: video.size,
-                        exists,
-                        playlist: exists ? `/api/hls/${video.id}/index.m3u8` : null,
+                        exists: hlsExists || dashExists,
+                        hlsUrl: hlsExists ? `/api/hls/${video.id}/master.m3u8` : null,
+                        dashUrl: dashExists ? `/api/dash/${video.id}/stream.mpd` : null,
+                        kid: video.kid || null,
                         qualities: video.qualities || [],
                         thumbnails: null,
                         status: video.status || 'unknown',
@@ -328,24 +376,34 @@ export const videoController = {
         try {
             const { videoId } = req.params;
 
-            const metadata = metadataService.getVideo(videoId);
+            const metadata = getVideo(videoId);
             if (!metadata) {
                 return res.status(404).json({ error: 'Video not found' });
             }
+
+            // 1. Borrar ambos prefijos de MinIO
             try {
-                await deletePrefix(videoId);
+                await deletePrefix(`hls/${videoId}`);
             } catch (err) {
-                logger.warn({ err, videoId }, 'Failed to delete from MinIO');
+                logger.warn({ err, videoId }, 'Failed to delete HLS from MinIO');
+            }
+            try {
+                await deletePrefix(`dash/${videoId}`);
+            } catch (err) {
+                logger.warn({ err, videoId }, 'Failed to delete DASH from MinIO');
             }
 
+            // 2. Borrar carpeta local si quedó algún residuo
             const videoPath = path.join(config.outputFolder, videoId);
             if (fs.existsSync(videoPath)) {
                 fs.rmSync(videoPath, { recursive: true, force: true });
             }
 
-            metadataService.deleteVideo(videoId);
+            // 3. Borrar metadata
+            deleteVideoFromDb(videoId);
             progressEmitter.emit('videos-changed');
 
+            // 4. Borrar archivo original de uploads si existe
             const uploadsDir = config.videoFolder;
             const uploadFiles = fs.readdirSync(uploadsDir).filter(f =>
                 f.includes(videoId.replace('video_', ''))

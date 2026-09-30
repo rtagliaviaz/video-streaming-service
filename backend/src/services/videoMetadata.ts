@@ -17,6 +17,8 @@ export interface VideoMetadata {
     jobId?: string;
     status?: 'queued' | 'processing' | 'completed' | 'failed';
     error?: string;
+    kid?: string;
+    formats?: ('hls' | 'dash')[];
 }
 
 const METADATA_FILE = 'videos.json';
@@ -92,5 +94,3 @@ export class VideoMetadataService {
         return match ? match[1] : fileName;
     }
 }
-
-export const metadataService = new VideoMetadataService(config.outputFolder);

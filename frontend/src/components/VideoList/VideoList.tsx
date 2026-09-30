@@ -28,12 +28,30 @@ export const VideoList: React.FC<VideoListProps> = ({ onSelectVideo, selectedVid
         }
         const success = await deleteVideo(videoId);
         if (success && selectedVideoId === videoId) {
-            onSelectVideo('');
+            // Deselect by signaling with an empty video object cast
+            // (VideoList only cares about the id when clearing)
+            onSelectVideo({
+                id: '',
+                originalName: '',
+                createdAt: '',
+                duration: 0,
+                durationFormatted: '00:00:00',
+                size: 0,
+                exists: false,
+                hlsUrl: null,
+                dashUrl: null,
+                kid: null,
+                qualities: [],
+                thumbnails: null,
+            });
         }
     };
 
     const handlePlayVideo = (videoId: string) => {
-        onSelectVideo(videoId);
+        const video = videos.find(v => v.id === videoId);
+        if (video) {
+            onSelectVideo(video);
+        }
     };
 
     const handleToggleSelect = (videoId: string) => {
@@ -69,14 +87,14 @@ export const VideoList: React.FC<VideoListProps> = ({ onSelectVideo, selectedVid
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                     {videos.some(v => v.exists) && (
                         <>
-                            <button 
+                            <button
                                 onClick={selectAllVideos}
                                 style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem' }}
                                 disabled={isBulkDeleting}
                             >
                                 Select All
                             </button>
-                            <button 
+                            <button
                                 onClick={deselectAllVideos}
                                 style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem' }}
                                 disabled={isBulkDeleting || selectedCount === 0}
@@ -84,10 +102,10 @@ export const VideoList: React.FC<VideoListProps> = ({ onSelectVideo, selectedVid
                                 Deselect
                             </button>
                             {selectedCount > 0 && (
-                                <button 
+                                <button
                                     onClick={deleteSelectedVideos}
-                                    style={{ 
-                                        fontSize: '0.75rem', 
+                                    style={{
+                                        fontSize: '0.75rem',
                                         padding: '0.2rem 0.6rem',
                                         background: '#ef4444',
                                         color: 'white',
@@ -102,8 +120,8 @@ export const VideoList: React.FC<VideoListProps> = ({ onSelectVideo, selectedVid
                             )}
                         </>
                     )}
-                    <button 
-                        onClick={loadVideos} 
+                    <button
+                        onClick={loadVideos}
                         style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem' }}
                         disabled={loading}
                     >
@@ -122,8 +140,8 @@ export const VideoList: React.FC<VideoListProps> = ({ onSelectVideo, selectedVid
                             video={video}
                             isSelected={selectedVideos.has(video.id)}
                             isDeleting={deleting === video.id || isBulkDeleting}
-                            onToggleSelect={handleToggleSelect}  
-                            onPlayVideo={handlePlayVideo}        
+                            onToggleSelect={handleToggleSelect}
+                            onPlayVideo={handlePlayVideo}
                             onDelete={handleDelete}
                         />
                     ))}
