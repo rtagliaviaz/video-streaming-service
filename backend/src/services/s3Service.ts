@@ -17,8 +17,8 @@ import { config } from '../config';
 import { logger } from '../logger';
 
 const agent = new https.Agent({
-    maxSockets: 10, 
-    keepAlive: false, 
+    maxSockets: 10,
+    keepAlive: false,
     timeout: 30000,
 });
 
@@ -32,14 +32,15 @@ const s3 = new S3Client({
     forcePathStyle: true,
     requestHandler: new NodeHttpHandler({
         httpsAgent: agent,
-        connectionTimeout: 10000,  
-        requestTimeout: 30000,  
+        connectionTimeout: 10000,
+        requestTimeout: 30000,
         socketAcquisitionWarningTimeout: 30000,
     }),
-    maxAttempts: 2, 
+    maxAttempts: 2,
 });
 
-const BUCKET = config.minio.bucket;
+const HLS_BUCKET = config.minio.bucket;
+const DASH_BUCKET = 'dash';
 
 function getFileMeta(filePath: string): { contentType: string; cacheControl: string } {
     const lower = filePath.toLowerCase();
@@ -47,6 +48,12 @@ function getFileMeta(filePath: string): { contentType: string; cacheControl: str
     if (lower.endsWith('.m3u8')) {
         return {
             contentType: 'application/vnd.apple.mpegurl',
+            cacheControl: 'no-cache, no-store, must-revalidate',
+        };
+    }
+    if (lower.endsWith('.mpd')) {
+        return {
+            contentType: 'application/dash+xml',
             cacheControl: 'no-cache, no-store, must-revalidate',
         };
     }
@@ -79,28 +86,44 @@ function getAllFiles(dir: string): string[] {
     return files;
 }
 
-export async function ensureBucket(): Promise<void> {
+// ---- Bucket management ----
+
+export async function ensureBucket(bucket: string = HLS_BUCKET): Promise<void> {
     try {
-        await s3.send(new HeadBucketCommand({ Bucket: BUCKET }));
-        logger.info(`[s3] Bucket "${BUCKET}" already exists`);
+        await s3.send(new HeadBucketCommand({ Bucket: bucket }));
+        logger.info(`[s3] Bucket "${bucket}" already exists`);
     } catch (err: any) {
         if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NotFound') {
-            await s3.send(new CreateBucketCommand({ Bucket: BUCKET }));
-            logger.info(`[s3] Bucket "${BUCKET}" created`);
+            await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+            logger.info(`[s3] Bucket "${bucket}" created`);
         } else {
             throw err;
         }
     }
 }
 
- // limitar concurrencia a 20 subidas simultáneas evita agotar el pool de sockets.
-export async function uploadDirectory(localDir: string, s3Prefix: string): Promise<number> {
+export async function ensureAllBuckets(): Promise<void> {
+    await ensureBucket(HLS_BUCKET);
+    await ensureBucket(DASH_BUCKET);
+}
+
+// ---- Upload ----
+
+/**
+ * Upload a local directory to MinIO, preserving the directory structure.
+ * Limits concurrency to 20 simultaneous uploads to avoid exhausting the socket pool.
+ */
+export async function uploadDirectory(
+    localDir: string,
+    s3Prefix: string,
+    bucket: string = HLS_BUCKET,
+): Promise<number> {
     if (!fs.existsSync(localDir)) {
         throw new Error(`Local directory not found: ${localDir}`);
     }
 
     const files = getAllFiles(localDir);
-    logger.info(`[s3] Uploading ${files.length} files to s3://${BUCKET}/${s3Prefix}/`);
+    logger.info(`[s3] Uploading ${files.length} files to s3://${bucket}/${s3Prefix}/`);
 
     const CONCURRENCY = 20;
     let uploaded = 0;
@@ -117,7 +140,7 @@ export async function uploadDirectory(localDir: string, s3Prefix: string): Promi
             const { contentType, cacheControl } = getFileMeta(file);
 
             await s3.send(new PutObjectCommand({
-                Bucket: BUCKET,
+                Bucket: bucket,
                 Key: key,
                 Body: fs.createReadStream(file),
                 ContentType: contentType,
@@ -130,15 +153,35 @@ export async function uploadDirectory(localDir: string, s3Prefix: string): Promi
     const workers = Array.from({ length: Math.min(CONCURRENCY, files.length) }, () => worker());
     await Promise.all(workers);
 
-    logger.info(`[s3] Uploaded ${uploaded} files to s3://${BUCKET}/${s3Prefix}/`);
+    logger.info(`[s3] Uploaded ${uploaded} files to s3://${bucket}/${s3Prefix}/`);
     return uploaded;
 }
 
 /**
- * Devuelve un stream del objeto en MinIO, junto con sus metadatos.
- * Usado por el proxy /hls/*.
+ * Upload the HLS output directory to the HLS bucket.
+ * Files are stored under `{videoId}/...` (no extra prefix, the bucket is the discriminator).
  */
-export async function getObjectStream(key: string): Promise<{
+export async function uploadHlsDirectory(localDir: string, videoId: string): Promise<number> {
+    return uploadDirectory(localDir, videoId, HLS_BUCKET);
+}
+
+/**
+ * Upload the DASH output directory to the DASH bucket.
+ * Files are stored under `{videoId}/...`.
+ */
+export async function uploadDashDirectory(localDir: string, videoId: string): Promise<number> {
+    return uploadDirectory(localDir, videoId, DASH_BUCKET);
+}
+
+// ---- Get ----
+
+/**
+ * Return a stream of the object in MinIO along with its metadata.
+ */
+export async function getObjectStream(
+    key: string,
+    bucket: string = HLS_BUCKET,
+): Promise<{
     stream: Readable;
     contentType?: string;
     contentLength?: number;
@@ -150,7 +193,7 @@ export async function getObjectStream(key: string): Promise<{
 } | null> {
     try {
         const res = await s3.send(new GetObjectCommand({
-            Bucket: BUCKET,
+            Bucket: bucket,
             Key: key,
         }));
 
@@ -173,9 +216,14 @@ export async function getObjectStream(key: string): Promise<{
     }
 }
 
-export async function objectExists(key: string): Promise<boolean> {
+// ---- Existence ----
+
+export async function objectExists(
+    key: string,
+    bucket: string = HLS_BUCKET,
+): Promise<boolean> {
     try {
-        await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+        await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
         return true;
     } catch (err: any) {
         if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NotFound') {
@@ -185,11 +233,23 @@ export async function objectExists(key: string): Promise<boolean> {
     }
 }
 
-export async function deletePrefix(s3Prefix: string): Promise<number> {
+/**
+ * Check existence in a specific bucket. Convenience wrapper.
+ */
+export async function objectExistsInBucket(key: string, bucket: string): Promise<boolean> {
+    return objectExists(key, bucket);
+}
+
+// ---- Delete ----
+
+export async function deletePrefix(
+    s3Prefix: string,
+    bucket: string = HLS_BUCKET,
+): Promise<number> {
     const prefix = s3Prefix.endsWith('/') ? s3Prefix : `${s3Prefix}/`;
 
     const list = await s3.send(new ListObjectsV2Command({
-        Bucket: BUCKET,
+        Bucket: bucket,
         Prefix: prefix,
     }));
 
@@ -201,10 +261,19 @@ export async function deletePrefix(s3Prefix: string): Promise<number> {
         .map((Key) => ({ Key }));
 
     await s3.send(new DeleteObjectsCommand({
-        Bucket: BUCKET,
+        Bucket: bucket,
         Delete: { Objects: keys, Quiet: true },
     }));
 
-    logger.info(`[s3] Deleted ${keys.length} objects with prefix "${prefix}"`);
+    logger.info(`[s3] Deleted ${keys.length} objects with prefix "${prefix}" from "${bucket}"`);
     return keys.length;
 }
+
+/**
+ * Delete a prefix in a specific bucket. Convenience wrapper.
+ */
+export async function deletePrefixInBucket(s3Prefix: string, bucket: string): Promise<number> {
+    return deletePrefix(s3Prefix, bucket);
+}
+
+export { HLS_BUCKET, DASH_BUCKET };

@@ -51,6 +51,7 @@ export const config = {
     redis: getRedisConfig(),
     minio: getMinioConfig(),
     drm: getDrmConfig(),
+    cdnBaseUrl: process.env.CDN_BASE_URL || 'http://localhost:8080',
 };
 
 export const ensureDirectories = () => {

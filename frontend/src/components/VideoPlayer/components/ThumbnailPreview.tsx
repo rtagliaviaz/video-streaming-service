@@ -3,7 +3,7 @@ import { useThumbnailVTT } from '../hooks/useThumbnailVTT';
 import type { ThumbnailTile } from '../hooks/useThumbnailVTT';
 
 interface ThumbnailPreviewProps {
-  videoId: string;
+  thumbnailBaseUrl: string | null;
   duration: number;
   containerWidth: number;
   mouseX: number;
@@ -11,13 +11,13 @@ interface ThumbnailPreviewProps {
 }
 
 export const ThumbnailPreview: React.FC<ThumbnailPreviewProps> = ({
-  videoId,
+  thumbnailBaseUrl,
   duration,
   containerWidth,
   mouseX,
   visible,
 }) => {
-  const { tiles, spriteUrl, loading } = useThumbnailVTT(videoId);
+  const { tiles, spriteUrl, loading } = useThumbnailVTT(thumbnailBaseUrl);
   const [previewTime, setPreviewTime] = useState(0);
   const [tile, setTile] = useState<ThumbnailTile | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);

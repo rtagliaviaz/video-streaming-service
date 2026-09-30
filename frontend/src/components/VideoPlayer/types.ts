@@ -26,5 +26,6 @@ export interface VideoPlayerProps {
     videoId: string | null;
     hlsUrl?: string | null;
     dashUrl?: string | null;
+    thumbnailBaseUrl?: string | null;
     kid?: string | null;
 }

@@ -9,19 +9,24 @@ export interface ThumbnailTile {
   height: number;
 }
 
-export function useThumbnailVTT(videoId: string | null, duration: number = 0) {
+export function useThumbnailVTT(thumbnailBaseUrl: string | null, duration: number = 0) {
   const [tiles, setTiles] = useState<ThumbnailTile[]>([]);
   const [spriteUrl, setSpriteUrl] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
 
   useEffect(() => {
-    if (!videoId) {
+    if (!thumbnailBaseUrl) {
       setTiles([]);
       setSpriteUrl('');
       return;
     }
 
-    const baseUrl = `/api/hls/${videoId}/thumbnails`;
+    if (!thumbnailBaseUrl) {
+        setTiles([]);
+        setSpriteUrl('');
+        return;
+    }
+    const baseUrl = thumbnailBaseUrl;
 
     const fetchVTT = async () => {
       setLoading(true);
@@ -74,7 +79,7 @@ export function useThumbnailVTT(videoId: string | null, duration: number = 0) {
     };
 
     fetchVTT();
-  }, [videoId, duration]);
+  }, [thumbnailBaseUrl, duration]);
 
   return { tiles, spriteUrl, loading };
 }

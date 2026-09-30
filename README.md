@@ -28,11 +28,13 @@ The player detects browser capabilities and picks the best format automatically,
 
 - [Features](#features)
 - [DRM Architecture](#drm-architecture)
+- [CDN Architecture](#cdn-architecture)
 - [GPU Acceleration (NVENC)](#gpu-acceleration-nvenc)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Environment Variables](#environment-variables)
+- [Third-Party Binaries](#third-party-binaries)
 - [Docker Volumes](#docker-volumes)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [How It Works](#how-it-works)
@@ -73,12 +75,14 @@ The player detects browser capabilities and picks the best format automatically,
 - **FIFO Processing** – Worker processes one video at a time (internal qualities still run in parallel)
 - **Temp Cleanup** – Upload files and intermediate outputs are deleted after successful processing
 
-### Storage
+### Storage & Delivery
 
-- **SQLite Metadata Store** – Video metadata is persisted in a local SQLite database (`backend/data/videos.db`) via `better-sqlite3`, with WAL mode enabled for concurrent reads. Replaces the previous `videos.json` flat file.
-- **MinIO (S3-compatible)** – All HLS and DASH assets are uploaded to MinIO after processing
-- **Backend Proxy** – The backend streams assets from MinIO via `/api/hls/*` and `/api/dash/*` (no direct browser-to-MinIO access)
-- **Tuned Cache Headers** – Playlists are `no-cache`, segments are `public, max-age=31536000, immutable`
+- **SQLite Metadata Store** – Video metadata is persisted in a local SQLite database (`backend/data/videos.db`) via `better-sqlite3`, with WAL mode enabled for concurrent reads.
+- **MinIO (S3-compatible)** – HLS and DASH assets are uploaded to two separate buckets after processing.
+- **Nginx Edge Cache** – An Nginx CDN sits in front of MinIO and caches media segments aggressively. Playlists are served uncached; `.m4s`, `.mp4`, `.vtt`, `.jpg`, and `.png` are cached for 1 year. Cache hits are visible via the `X-Cache-Status` response header.
+- **Decoupled Delivery** – The backend no longer serves media bytes; it only orchestrates processing, metadata, and job state. This mirrors the production model (CloudFront → S3) where compute and delivery are separate concerns.
+- **Tuned Cache Headers** – Playlists are `no-cache, no-store, must-revalidate`; segments are `public, max-age=31536000, immutable`.
+
 
 ### Real-Time Updates
 - **Server-Sent Events (SSE)** – Live progress and video list updates (no polling)
@@ -162,6 +166,83 @@ Separate Python microservice (`license-service/`) built with FastAPI and SQLite.
 | `GET` | `/api/license/{kid}` | Return the raw 16-byte key (AES-128 for HLS) |
 | `POST` | `/api/license` | Return W3C ClearKey JSON (EME for DASH) |
 
+## CDN Architecture
+
+### Overview
+
+The project simulates a production-grade CDN + object storage setup using two independent containers:
+
+```
+Browser
+   │
+   ├─ HLS:  http://localhost:8080/hls/{videoId}/master.m3u8
+   └─ DASH: http://localhost:8080/dash/{videoId}/stream.mpd
+              │
+              ▼
+       ┌──────────────┐
+       │ Nginx (CDN)  │  :8080
+       │ proxy_cache  │  caches segments for 1 year
+       └──────┬───────┘
+              │ MISS → fetch
+              ▼
+       ┌──────────────┐
+       │ MinIO        │  :9000 (S3 API)
+       │              │  :9001 (console)
+       └──────────────┘
+```
+
+- Nginx acts as the edge cache (equivalent to CloudFront).
+- MinIO acts as the origin object storage (equivalent to S3).
+- The backend **never serves media bytes** — it only orchestrates.
+- Both buckets are configured with anonymous `download` access so Nginx can read them.
+
+### Cache rules
+
+| File type | Cache behavior | `X-Cache-Status` |
+|-----------|----------------|------------------|
+| `.m3u8`, `.mpd` (playlists) | Not cached | `BYPASS` |
+| `.m4s`, `.mp4`, `.ts` (segments) | Cached 1 year | `MISS` → `HIT` |
+| `.vtt` (subtitles) | Cached 1 year | `MISS` → `HIT` |
+| `.jpg`, `.png` (thumbnails) | Cached 1 year | `MISS` → `HIT` |
+
+### Verifying the cache
+
+```bash
+# Playlist — always BYPASS (never cached)
+curl -I http://localhost:8080/hls/video_xxx/master.m3u8
+# Expect: X-Cache-Status: BYPASS
+
+# Segment — first call MISS, second call HIT
+curl -I http://localhost:8080/hls/video_xxx/video_480p/000.m4s
+curl -I http://localhost:8080/hls/video_xxx/video_480p/000.m4s
+# Expect: X-Cache-Status: MISS then HIT
+
+# DASH segment — same behavior
+curl -I http://localhost:8080/dash/video_xxx/video/avc1/seg-1.m4s
+curl -I http://localhost:8080/dash/video_xxx/video/avc1/seg-1.m4s
+```
+
+### Making MinIO buckets public (one-time setup)
+
+Nginx reads from MinIO **without** S3 credentials, so both buckets must allow anonymous read access:
+
+```bash
+docker exec video-streaming-minio mc alias set local http://localhost:9000 minioadmin minioadmin
+docker exec video-streaming-minio mc anonymous set download local/hls
+docker exec video-streaming-minio mc anonymous set download local/dash
+```
+
+In production, you would instead use **signed URLs** or **Origin Access Identity** to keep the bucket private. For a local learning environment, anonymous read is acceptable.
+
+### Why this matters
+
+This architecture mirrors how Netflix, YouTube, and Twitch deliver content:
+
+- **Compute (transcoding)** is decoupled from **delivery (CDN)**.
+- The backend can scale independently from the edge cache.
+- The cache hit ratio determines how much bandwidth the origin actually serves.
+- Media segments are immutable, so they can be cached for years without invalidation.
+
 ## GPU Acceleration (NVENC)
 
 This project supports GPU acceleration using NVIDIA NVENC for **local development** on Windows (with NVIDIA drivers installed).
@@ -223,7 +304,9 @@ The application will automatically fall back to CPU if GPU is not available.
 **Infrastructure**
 - Docker & Docker Compose
 - Redis 7 with AOF persistence
-- Nginx for serving frontend
+- MinIO (S3-compatible object storage)
+- Nginx as edge cache (CDN) in front of MinIO
+- Nginx for serving the frontend
 - Alpine Linux for lightweight images
 
 **Testing**
@@ -290,19 +373,28 @@ The application will automatically fall back to CPU if GPU is not available.
 
 This is the recommended setup for development. Redis and MinIO run in Docker, while the backend, frontend, and License Service run locally with hot reload.
 
-#### 2.1 — Start infrastructure (Redis + MinIO)
+#### 2.1 — Start infrastructure (Redis + MinIO + CDN)
 
 ```bash
-docker-compose up -d redis minio
+docker-compose up -d redis minio cdn
 ```
 
-Verify both are healthy:
+Verify all three are healthy:
 
 ```bash
 docker-compose ps
 ```
 
-MinIO console: http://localhost:9001 (`minioadmin` / `minioadmin`)
+- MinIO console: http://localhost:9001 (`minioadmin` / `minioadmin`)
+- CDN: http://localhost:8080
+
+**One-time setup — make MinIO buckets public** so Nginx can read them without credentials:
+
+```bash
+docker exec video-streaming-minio mc alias set local http://localhost:9000 minioadmin minioadmin
+docker exec video-streaming-minio mc anonymous set download local/hls
+docker exec video-streaming-minio mc anonymous set download local/dash
+```
 
 #### 2.2 — Start the License Service (Python)
 
@@ -355,6 +447,7 @@ Open your browser at http://localhost:5173
 | Redis | Docker | 6379 |
 | MinIO (S3 API) | Docker | 9000 |
 | MinIO (Console) | Docker | 9001 |
+| CDN (Nginx) | Docker | 8080 |
 | License Service | Local (Python) | 4000 |
 | Backend | Local (Node) | 3001 |
 | Frontend | Local (Vite) | 5173 |
@@ -387,6 +480,7 @@ For deployment scenarios where GPU acceleration is not required, the full Docker
 | `BENTO4_MP4DASH_SCRIPT` | Path to Bento4's `mp4-dash.py` | `./utils/mp4-dash.py` |
 | `BENTO4_MP4FRAGMENT_PATH` | Path to `mp4fragment` executable | `./bin/mp4fragment.exe` |
 | `BENTO4_PYTHON_BIN` | Python interpreter for `mp4-dash.py` | `python` |
+| `CDN_BASE_URL` | Public CDN URL prepended to `hlsUrl` and `dashUrl` in API responses | `http://localhost:8080` |
 
 
 ## Third-Party Binaries
@@ -428,6 +522,7 @@ python ./utils/mp4-dash.py --help
 - `./minio-data` – MinIO object storage (persists all HLS and DASH assets)
 - `./backend/data` – SQLite database (`videos.db`) with video metadata
 - `redis-data` – Redis AOF file (persists the job queue across container restarts)
+- `cdn-cache` – Nginx cache (persists cache entries across container restarts)
 
 ## Keyboard Shortcuts
 
@@ -499,12 +594,14 @@ The video list subscribes to `/api/videos/events` and refetches when metadata ch
 
 ### 6. Streaming & Playback
 
-HLS and DASH assets are served through backend proxies:
+The frontend requests media **directly from the CDN** (`http://localhost:8080`), not from the backend:
 
-- `/api/hls/:videoId/*` → reads from `hls/{videoId}/...` in MinIO
-- `/api/dash/:videoId/*` → reads from `dash/{videoId}/...` in MinIO
+- `http://localhost:8080/hls/{videoId}/master.m3u8` → served by Nginx, backed by the `hls` bucket in MinIO
+- `http://localhost:8080/dash/{videoId}/stream.mpd` → served by Nginx, backed by the `dash` bucket in MinIO
 
-Both proxies forward the original `Content-Type`, `Cache-Control`, `ETag`, and `Last-Modified` headers set at upload time.
+Nginx caches all media segments on first fetch (`MISS`) and serves subsequent requests from cache (`HIT`). Playlists are always fetched from MinIO (`BYPASS`) so updates are picked up immediately.
+
+Cache headers set at upload time (and forwarded by the CDN):
 
 - `.m3u8` / `.mpd` (playlists): `no-cache, no-store, must-revalidate`
 - `.m4s`, `.mp4`, `.vtt`, `.jpg`, `.png`: `public, max-age=31536000, immutable`
@@ -514,6 +611,8 @@ Both proxies forward the original `Content-Type`, `Cache-Control`, `ETag`, and `
 - If `dashUrl` is available **and** the browser supports ClearKey EME → **DASH via dash.js**
 - Otherwise → **HLS via HLS.js**
 - The user can override the choice from a dropdown in the player controls
+
+The backend returns `hlsUrl`, `dashUrl`, and `thumbnailBaseUrl` in `/api/videos`, all already pointing at the CDN.
 
 ### 7. Thumbnail Preview
 
@@ -532,9 +631,9 @@ video-streaming-service/
 │   │   │   │   ├── videoInfo.ts
 │   │   │   │   ├── gpuDetector.ts
 │   │   │   │   ├── thumbnailGenerator.ts
-│   │   │   │   ├── transcodeToMp4.ts       # FFmpeg → MP4 intermediates
-│   │   │   │   ├── hlsEncryptor.ts         # Shaka Packager → encrypted HLS
-│   │   │   │   └── dashPackager.ts         # Bento4 → encrypted DASH
+│   │   │   │   ├── transcodeToMp4.ts       # FFmpeg -> MP4 intermediates
+│   │   │   │   ├── hlsEncryptor.ts         # Shaka Packager -> encrypted HLS
+│   │   │   │   └── dashPackager.ts         # Bento4 -> encrypted DASH
 │   │   │   ├── queueService.ts             # BullMQ queue + worker
 │   │   │   ├── eventEmitter.ts             # Global EventEmitter for SSE
 │   │   │   ├── db.ts                       # SQLite connection + schema
@@ -584,6 +683,8 @@ video-streaming-service/
 │   │   ├── schemas.py
 │   │   └── routes.py
 │   └── requirements.txt
+├── nginx/
+│   └── cdn.conf                            # Edge cache config (proxy_cache -> MinIO)
 ├── docker-compose.yml
 └── README.md
 ```
@@ -593,7 +694,7 @@ video-streaming-service/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/upload` | Upload a video and enqueue it for processing |
-| `GET` | `/api/videos` | List all videos with metadata, status, `hlsUrl`, `dashUrl`, and `kid` |
+| `GET` | `/api/videos` | List all videos with metadata, status, `hlsUrl`, `dashUrl`, `thumbnailBaseUrl`, and `kid` |
 | `DELETE` | `/api/videos/:videoId` | Delete a video and its HLS + DASH assets |
 | `GET` | `/api/video/info/:videoId` | Get info about a specific video |
 | `GET` | `/api/jobs` | List jobs (with optional `states` filter) |
@@ -604,10 +705,15 @@ video-streaming-service/
 | `GET` | `/api/events/:jobId` | SSE stream for a specific job's progress |
 | `GET` | `/api/videos/events` | SSE stream for video list changes |
 | `GET` | `/api/gpu/info` | Get GPU availability and encoder info |
-| `GET` | `/api/hls/:videoId/*` | Proxy to MinIO `hls/{videoId}/...` |
-| `GET` | `/api/dash/:videoId/*` | Proxy to MinIO `dash/{videoId}/...` |
 
-**License Service (separate process, port 4000):**
+**CDN (Nginx, port 8080):**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/hls/:videoId/*` | HLS playlists and segments (cached) |
+| `GET` | `/dash/:videoId/*` | DASH manifest and segments (cached) |
+
+**License Service (Python, port 4000):**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|

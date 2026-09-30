@@ -16,7 +16,7 @@ import { VideoMetadataService } from '../services/videoMetadata';
 import { getVideo, getAllVideos, addOrUpdateVideo, deleteVideo as deleteVideoFromDb } from '../services/videoRepository';
 import { logger } from '../logger';
 import { progressEmitter } from '../services/eventEmitter';
-import { getObjectStream, deletePrefix, objectExists  } from '../services/s3Service';
+import { deletePrefixInBucket, objectExistsInBucket,  } from '../services/s3Service';
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -231,95 +231,6 @@ export const videoController = {
         }
     },
 
-    getHlsFile: async (req: Request, res: Response) => {
-        const videoId = req.params[0];
-        const filePath = req.params[1];
-
-        if (!videoId || !filePath) {
-            return res.status(400).json({ error: 'Missing videoId or filePath' });
-        }
-
-        const key = `hls/${videoId}/${filePath}`;
-
-        try {
-            const obj = await getObjectStream(key);
-            if (!obj) {
-                return res.status(404).json({ error: 'File not found' });
-            }
-
-            if (obj.contentType) res.setHeader('Content-Type', obj.contentType);
-            if (obj.contentLength !== undefined) res.setHeader('Content-Length', String(obj.contentLength));
-            if (obj.cacheControl) res.setHeader('Cache-Control', obj.cacheControl);
-            if (obj.etag) res.setHeader('ETag', obj.etag);
-            if (obj.lastModified) res.setHeader('Last-Modified', obj.lastModified.toUTCString());
-            res.setHeader('Accept-Ranges', 'bytes');
-
-            // destruir el stream para liberar la conexión a MinIO.
-            req.on('close', () => {
-                obj.stream.destroy();
-            });
-
-            obj.stream.on('error', (err) => {
-                logger.error({ err, key }, 'Stream error');
-                obj.stream.destroy();
-                if (!res.headersSent) res.status(500).end();
-                else res.end();
-            });
-
-            obj.stream.pipe(res);
-        } catch (error: any) {
-            const isTimeout = error?.name === 'TimeoutError';
-            logger.error({ error: error?.name, key }, 'getHlsFile error');
-            if (!res.headersSent) {
-                res.status(isTimeout ? 504 : 500).json({ error: 'Failed to fetch file' });
-            }
-        }
-    },
-
-    getDashFile: async (req: Request, res: Response) => {
-        const videoId = req.params[0];
-        const filePath = req.params[1];
-
-        if (!videoId || !filePath) {
-            return res.status(400).json({ error: 'Missing videoId or filePath' });
-        }
-
-        const key = `dash/${videoId}/${filePath}`;
-
-        try {
-            const obj = await getObjectStream(key);
-            if (!obj) {
-                return res.status(404).json({ error: 'File not found' });
-            }
-
-            if (obj.contentType) res.setHeader('Content-Type', obj.contentType);
-            if (obj.contentLength !== undefined) res.setHeader('Content-Length', String(obj.contentLength));
-            if (obj.cacheControl) res.setHeader('Cache-Control', obj.cacheControl);
-            if (obj.etag) res.setHeader('ETag', obj.etag);
-            if (obj.lastModified) res.setHeader('Last-Modified', obj.lastModified.toUTCString());
-            res.setHeader('Accept-Ranges', 'bytes');
-
-            req.on('close', () => {
-                obj.stream.destroy();
-            });
-
-            obj.stream.on('error', (err) => {
-                logger.error({ err, key }, 'Stream error');
-                obj.stream.destroy();
-                if (!res.headersSent) res.status(500).end();
-                else res.end();
-            });
-
-            obj.stream.pipe(res);
-        } catch (error: any) {
-            const isTimeout = error?.name === 'TimeoutError';
-            logger.error({ error: error?.name, key }, 'getDashFile error');
-            if (!res.headersSent) {
-                res.status(isTimeout ? 504 : 500).json({ error: 'Failed to fetch file' });
-            }
-        }
-    },
-
     getQueueStatus: async (req: Request, res: Response) => {
         try {
             const counts = await videoQueue.getJobCounts();
@@ -339,11 +250,12 @@ export const videoController = {
     listVideos: async (req: Request, res: Response) => {
         try {
             const videos = getAllVideos();
+            const cdnBase = config.cdnBaseUrl;
 
             const enrichedVideos = await Promise.all(
                 videos.map(async (video) => {
-                    const hlsExists = await objectExists(`hls/${video.id}/master.m3u8`);
-                    const dashExists = await objectExists(`dash/${video.id}/stream.mpd`);
+                    const hlsExists = await objectExistsInBucket(`${video.id}/master.m3u8`, config.minio.bucket);
+                    const dashExists = await objectExistsInBucket(`${video.id}/stream.mpd`, 'dash');
 
                     return {
                         id: video.id,
@@ -353,8 +265,9 @@ export const videoController = {
                         durationFormatted: video.durationFormatted || '00:00:00',
                         size: video.size,
                         exists: hlsExists || dashExists,
-                        hlsUrl: hlsExists ? `/api/hls/${video.id}/master.m3u8` : null,
-                        dashUrl: dashExists ? `/api/dash/${video.id}/stream.mpd` : null,
+                        hlsUrl: hlsExists ? `${cdnBase}/hls/${video.id}/master.m3u8` : null,
+                        dashUrl: dashExists ? `${cdnBase}/dash/${video.id}/stream.mpd` : null,
+                        thumbnailBaseUrl: hlsExists ? `${cdnBase}/hls/${video.id}/thumbnails` : null,
                         kid: video.kid || null,
                         qualities: video.qualities || [],
                         thumbnails: null,
@@ -383,12 +296,12 @@ export const videoController = {
 
             // 1. Borrar ambos prefijos de MinIO
             try {
-                await deletePrefix(`hls/${videoId}`);
+                await deletePrefixInBucket(videoId, config.minio.bucket);
             } catch (err) {
                 logger.warn({ err, videoId }, 'Failed to delete HLS from MinIO');
             }
             try {
-                await deletePrefix(`dash/${videoId}`);
+                await deletePrefixInBucket(videoId, 'dash');
             } catch (err) {
                 logger.warn({ err, videoId }, 'Failed to delete DASH from MinIO');
             }

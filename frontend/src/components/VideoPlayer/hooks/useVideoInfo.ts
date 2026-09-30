@@ -2,7 +2,12 @@ import { useState, useEffect } from 'react';
 import { videoApi } from '../../../services/api';
 import type { AudioTrack, SubtitleTrack } from '../types';
 
-export const useVideoInfo = (videoId: string | null) => {
+interface UseVideoInfoProps {
+    videoId: string | null;
+    hlsUrl?: string | null;
+}
+
+export const useVideoInfo = ({ videoId, hlsUrl = null }: UseVideoInfoProps) => {
     const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
     const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrack[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -20,32 +25,32 @@ export const useVideoInfo = (videoId: string | null) => {
             setError(null);
             try {
                 const response = await videoApi.getVideoInfo(videoId);
-                console.log('📊 Backend response:', response.data);
-                
                 let subs = response.data.subtitleTracks || [];
-                
-                if (subs.length === 0) {
-                    console.log('📝 Backend no devolvió subtítulos, leyendo del manifiesto HLS...');
-                    
+
+                // If the backend didn't provide subtitles AND we have an HLS URL,
+                // parse the master playlist from the CDN.
+                if (subs.length === 0 && hlsUrl) {
+                    console.log('📝 Backend returned no subtitles, parsing HLS manifest from CDN...');
+
                     try {
-                        const manifestUrl = `http://localhost:3001/api/hls/${videoId}/master.m3u8`;
-                        const manifestResponse = await fetch(manifestUrl);
+                        const manifestResponse = await fetch(hlsUrl);
+                        if (!manifestResponse.ok) {
+                            throw new Error(`Manifest fetch failed: ${manifestResponse.status}`);
+                        }
                         const manifestText = await manifestResponse.text();
-                        
-                        console.log('📝 Manifiesto HLS:', manifestText.substring(0, 500) + '...');
-                        
+
                         const lines = manifestText.split('\n');
-                        const subtitleLines = lines.filter(line => 
+                        const subtitleLines = lines.filter(line =>
                             line.includes('TYPE=SUBTITLES') || line.includes('TYPE="SUBTITLES"')
                         );
-                        
-                        console.log(`📝 Encontradas ${subtitleLines.length} líneas de subtítulos en el manifiesto`);
-                        
+
+                        console.log(`📝 Found ${subtitleLines.length} subtitle lines in manifest`);
+
                         subtitleLines.forEach((line, index) => {
                             const langMatch = line.match(/LANGUAGE="([^"]+)"/);
                             const nameMatch = line.match(/NAME="([^"]+)"/);
                             const uriMatch = line.match(/URI="([^"]+)"/);
-                            
+
                             if (uriMatch) {
                                 subs.push({
                                     index: index,
@@ -53,24 +58,19 @@ export const useVideoInfo = (videoId: string | null) => {
                                     codec: 'webvtt',
                                     title: nameMatch ? nameMatch[1] : `Subtitle ${index + 1}`,
                                     default: index === 0,
-                                    uri: uriMatch[1]
                                 });
                             }
                         });
-                        
-                        console.log(`📝 ${subs.length} subtítulos extraídos del manifiesto`);
-                        
+
+                        console.log(`📝 ${subs.length} subtitles extracted from manifest`);
                     } catch (manifestError) {
-                        console.error('❌ Error leyendo manifiesto HLS:', manifestError);
+                        // Not fatal — the video plays regardless.
+                        console.warn('⚠️ Could not read HLS manifest for subtitles:', manifestError);
                     }
                 }
-                
-                console.log(`🎵 ${response.data.audioTracks?.length || 0} pistas de audio`);
-                console.log(`📝 ${subs.length} pistas de subtítulos`);
-                
+
                 setSubtitleTracks(subs);
                 setAudioTracks(response.data.audioTracks || []);
-                
             } catch (err) {
                 console.error('Error fetching video info:', err);
                 setError('Failed to load video info');
@@ -80,7 +80,7 @@ export const useVideoInfo = (videoId: string | null) => {
         };
 
         fetchVideoInfo();
-    }, [videoId]);
+    }, [videoId, hlsUrl]);
 
     return { audioTracks, subtitleTracks, isLoading, error };
 };

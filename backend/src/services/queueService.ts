@@ -7,7 +7,11 @@ import { logger } from '../logger';
 import { getVideo, addOrUpdateVideo } from './videoRepository';
 import { ProgressInfo } from './ffmpeg/types';
 import { progressEmitter } from './eventEmitter';
-import { uploadDirectory, ensureBucket } from './s3Service';
+import {
+  uploadHlsDirectory,
+  uploadDashDirectory,
+  ensureAllBuckets,
+} from './s3Service';
 import { transcodeToMp4 } from './ffmpeg/transcodeToMp4';
 import { encryptHLS } from './ffmpeg/hlsEncryptor';
 import { packageDASH } from './ffmpeg/dashPackager';
@@ -35,8 +39,8 @@ connection.on('error', (err) => {
   logger.error({ err: err.message }, '[bullmq] Redis connection error');
 });
 
-ensureBucket().catch((err) => {
-  logger.error({ err }, '[bullmq] Failed to ensure MinIO bucket');
+ensureAllBuckets().catch((err) => {
+  logger.error({ err }, '[bullmq] Failed to ensure MinIO buckets');
 });
 
 export const videoQueue = new Queue('video-processing', { connection });
@@ -154,13 +158,15 @@ export const videoWorker = new Worker(
 
       jobAbortControllers.delete(job.id!);
 
+      // ---- Upload HLS to the `hls` bucket under {videoId}/ ----
       await job.updateProgress(96);
       logger.info(`[bullmq] Uploading HLS to MinIO for ${videoId}`);
-      await uploadDirectory(hlsResult.hlsDir, `hls/${videoId}`);
+      await uploadHlsDirectory(hlsResult.hlsDir, videoId);
 
+      // ---- Upload DASH to the `dash` bucket under {videoId}/ ----
       await job.updateProgress(98);
       logger.info(`[bullmq] Uploading DASH to MinIO for ${videoId}`);
-      await uploadDirectory(dashResult.dashDir, `dash/${videoId}`);
+      await uploadDashDirectory(dashResult.dashDir, videoId);
 
       try {
         fs.rmSync(outputPath, { recursive: true, force: true });

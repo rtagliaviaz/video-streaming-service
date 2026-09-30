@@ -17,6 +17,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   videoId,
   hlsUrl = null,
   dashUrl = null,
+  thumbnailBaseUrl = null,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -39,7 +40,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [progressBarWidth, setProgressBarWidth] = useState(0);
   const [formatPreference, setFormatPreference] = useState<FormatPreference>('auto');
 
-  const { audioTracks: fetchedAudioTracks, subtitleTracks: fetchedSubtitleTracks } = useVideoInfo(videoId);
+  const { audioTracks: fetchedAudioTracks, subtitleTracks: fetchedSubtitleTracks } = useVideoInfo({
+    videoId,
+    hlsUrl,
+  });
   const { isFullscreen, toggleFullscreen } = useFullscreen(containerRef as React.RefObject<HTMLDivElement>);
 
   const {
@@ -353,7 +357,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           />
 
           <ThumbnailPreview
-            videoId={videoId}
+            thumbnailBaseUrl={thumbnailBaseUrl}
             duration={duration}
             containerWidth={progressBarWidth}
             mouseX={mouseX}

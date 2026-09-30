@@ -10,6 +10,7 @@ export interface Video {
     exists: boolean;
     hlsUrl: string | null;
     dashUrl: string | null;
+    thumbnailBaseUrl: string | null;
     kid: string | null;
     qualities: string[];
     thumbnails: string[] | null;

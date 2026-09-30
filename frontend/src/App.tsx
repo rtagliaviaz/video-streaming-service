@@ -50,6 +50,7 @@ function App() {
                     videoId={selectedVideo?.id ?? null}
                     hlsUrl={selectedVideo?.hlsUrl ?? null}
                     dashUrl={selectedVideo?.dashUrl ?? null}
+                    thumbnailBaseUrl={selectedVideo?.thumbnailBaseUrl ?? null}
                     kid={selectedVideo?.kid ?? null}
                 />
             </div>
