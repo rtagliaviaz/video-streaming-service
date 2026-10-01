@@ -29,6 +29,7 @@ The player detects browser capabilities and picks the best format automatically,
 - [Features](#features)
 - [DRM Architecture](#drm-architecture)
 - [CDN Architecture](#cdn-architecture)
+- [Health & Monitoring](#health--monitoring)
 - [GPU Acceleration (NVENC)](#gpu-acceleration-nvenc)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
@@ -110,6 +111,11 @@ The player detects browser capabilities and picks the best format automatically,
 - **Dockerized** – Run backend, frontend, Redis, and MinIO with a single command
 - **Redis Persistence** – AOF enabled for job durability across restarts
 - **MinIO Persistence** – Volume-backed object storage
+
+### Health & Observability
+- **Health Check Endpoint** – `/api/health` reports the status of Redis, MinIO, SQLite, License Service, filesystem, and BullMQ queue, with per-component latency
+- **Kubernetes-style Probes** – `/api/health/live` (liveness) and `/api/health/ready` (readiness) for container orchestration
+- **Uptime Kuma Dashboard** – Optional containerized dashboard for visual status of the Docker services
 
 
 ## DRM Architecture
@@ -243,6 +249,70 @@ This architecture mirrors how Netflix, YouTube, and Twitch deliver content:
 - The cache hit ratio determines how much bandwidth the origin actually serves.
 - Media segments are immutable, so they can be cached for years without invalidation.
 
+## Health & Monitoring
+
+### Health endpoints
+
+The backend exposes three health endpoints for different purposes:
+
+| Endpoint | Purpose | Success | Failure |
+|----------|---------|---------|---------|
+| `GET /api/health` | Full status of every component | 200 | 503 |
+| `GET /api/health/live` | Liveness probe (is the process alive?) | 200 | — |
+| `GET /api/health/ready` | Readiness probe (can it serve traffic?) | 200 | 503 |
+
+The `/api/health` endpoint checks in parallel:
+
+- **Redis** — `PING` with latency measurement
+- **MinIO** — `HeadBucket` on the `hls` bucket
+- **SQLite** — a trivial `SELECT` to verify the DB is reachable
+- **License Service** — `GET /api/health` with a 3-second timeout
+- **Filesystem** — `uploads/` and `hls/` exist and are writable
+- **Queue** — `getJobCounts()` from BullMQ
+
+Response shape:
+
+```json
+{
+  "status": "healthy",
+  "uptimeSeconds": 3600,
+  "timestamp": "2026-10-01T12:00:00.000Z",
+  "components": {
+    "redis":          { "status": "up", "latencyMs": 1 },
+    "minio":          { "status": "up", "latencyMs": 4 },
+    "database":       { "status": "up", "latencyMs": 0, "details": { "videoCount": 5 } },
+    "licenseService": { "status": "up", "latencyMs": 8 },
+    "filesystem":     { "status": "up", "latencyMs": 0, "details": { ... } },
+    "queue":          { "status": "up", "latencyMs": 2, "details": { "waiting": 0, "active": 1, ... } }
+  }
+}
+```
+
+**Global status:**
+
+- `healthy` — every component is `up`
+- `degraded` — a non-critical component is `down` (e.g. License Service)
+- `unhealthy` — Redis or MinIO are `down` (both are critical for job processing)
+
+HTTP response codes: `200` for `healthy` and `degraded`, `503` for `unhealthy`.
+
+### Uptime Kuma (optional, local development)
+
+For a visual dashboard of service status, the project includes an optional [Uptime Kuma](https://github.com/louislam/uptime-kuma) container:
+
+```bash
+docker compose up -d uptime-kuma
+```
+
+Open http://localhost:3002 and create an admin user. Recommended monitors:
+
+| Monitor | Type | URL / Host | Notes |
+|---------|------|------------|-------|
+| MinIO | HTTP(s) | `http://minio:9000/minio/health/live` | Same Docker network, resolves by container name |
+| Redis | TCP Port | `redis:6379` | Same Docker network |
+
+**Note:** Because Uptime Kuma runs inside Docker, it cannot reach services running natively on Windows (backend, frontend, License Service) via `localhost` or `host.docker.internal` due to a Docker Desktop networking limitation. Monitor only the containerized services, and use `/api/health` directly for the native ones.
+
 ## GPU Acceleration (NVENC)
 
 This project supports GPU acceleration using NVIDIA NVENC for **local development** on Windows (with NVIDIA drivers installed).
@@ -307,6 +377,7 @@ The application will automatically fall back to CPU if GPU is not available.
 - MinIO (S3-compatible object storage)
 - Nginx as edge cache (CDN) in front of MinIO
 - Nginx for serving the frontend
+- Uptime Kuma for service monitoring (optional)
 - Alpine Linux for lightweight images
 
 **Testing**
@@ -395,6 +466,13 @@ docker exec video-streaming-minio mc alias set local http://localhost:9000 minio
 docker exec video-streaming-minio mc anonymous set download local/hls
 docker exec video-streaming-minio mc anonymous set download local/dash
 ```
+**Optional: start Uptime Kuma** for a visual status dashboard:
+
+```bash
+docker-compose up -d uptime-kuma
+```
+
+Open http://localhost:3002 and configure monitors for MinIO and Redis.
 
 #### 2.2 — Start the License Service (Python)
 
@@ -523,6 +601,7 @@ python ./utils/mp4-dash.py --help
 - `./backend/data` – SQLite database (`videos.db`) with video metadata
 - `redis-data` – Redis AOF file (persists the job queue across container restarts)
 - `cdn-cache` – Nginx cache (persists cache entries across container restarts)
+- `uptime-kuma-data` – Uptime Kuma monitors, history, and settings
 
 ## Keyboard Shortcuts
 
@@ -643,6 +722,7 @@ video-streaming-service/
 │   │   │   └── s3Service.ts                # MinIO upload, get, delete
 │   │   ├── controllers/
 │   │   │   ├── videoController.ts
+│   │   │   ├── healthController.ts        # Health check endpoints
 │   │   │   └── queueController.ts          # SSE endpoints
 │   │   ├── routes.ts
 │   │   ├── config.ts
@@ -705,6 +785,9 @@ video-streaming-service/
 | `GET` | `/api/events/:jobId` | SSE stream for a specific job's progress |
 | `GET` | `/api/videos/events` | SSE stream for video list changes |
 | `GET` | `/api/gpu/info` | Get GPU availability and encoder info |
+| `GET` | `/api/health` | Full status of every component |
+| `GET` | `/api/health/live` | Liveness probe |
+| `GET` | `/api/health/ready` | Readiness probe |
 
 **CDN (Nginx, port 8080):**
 

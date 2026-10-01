@@ -276,4 +276,9 @@ export async function deletePrefixInBucket(s3Prefix: string, bucket: string): Pr
     return deletePrefix(s3Prefix, bucket);
 }
 
+
 export { HLS_BUCKET, DASH_BUCKET };
+
+export function getS3Client(): S3Client {
+    return s3;
+}

@@ -35,6 +35,16 @@ services:
       - minio
     restart: unless-stopped
 
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    container_name: video-streaming-uptime
+    ports:
+      - "3002:3001"
+    volumes:
+      - uptime-kuma-data:/app/data
+    restart: unless-stopped
+
 volumes:
   redis-data:
   cdn-cache:
+  uptime-kuma-data:

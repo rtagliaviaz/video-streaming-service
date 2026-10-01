@@ -1,8 +1,14 @@
 import express from 'express';
 import { videoController } from '../controllers/videoController';
 import { queueController } from '../controllers/queueController';
+import { healthController } from '../controllers/healthController';
+
 
 const router = express.Router();
+
+router.get('/health', healthController.getHealth);
+router.get('/health/live', healthController.getLiveness);
+router.get('/health/ready', healthController.getReadiness);
 
 router.get('/gpu/info', videoController.getGPUInfo);
 
