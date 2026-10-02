@@ -104,6 +104,7 @@ function runPythonScript(
     });
 }
 
+
 export async function packageDASH(options: DashOptions): Promise<DashPackagedResult> {
     const {
         transcode,
@@ -115,7 +116,7 @@ export async function packageDASH(options: DashOptions): Promise<DashPackagedRes
         signal,
     } = options;
 
-    // Normalizar todas las rutas a absolutas
+    // Normalize all paths to absolute
     const absOutputDir = path.resolve(outputDir);
     const dashDir = path.resolve(absOutputDir, videoId, 'dash');
     const fragDir = path.resolve(dashDir, '_frag');
@@ -127,18 +128,24 @@ export async function packageDASH(options: DashOptions): Promise<DashPackagedRes
             videoId,
             kid,
             dashDir,
-            qualities: transcode.videoMp4s.length,
+            h264Qualities: transcode.videoMp4s.length,
+            hevcQualities: transcode.videoMp4sHevc.length,
             audios: transcode.audioMp4s.length,
             licenseServiceUrl,
         },
         '[dash-packager] Starting DASH packaging'
     );
 
-    // se fragmentan los mp4
     const fragmentedPaths: string[] = [];
     fs.mkdirSync(fragDir, { recursive: true });
 
-    const allMp4s = [...transcode.videoMp4s, ...transcode.audioMp4s];
+    // All video MP4s (H.264 + HEVC) + audio MP4s go through fragmentation
+    const allVideoMp4s = [
+        ...transcode.videoMp4s,
+        ...transcode.videoMp4sHevc,
+    ];
+    const allMp4s = [...allVideoMp4s, ...transcode.audioMp4s];
+
     for (const mp4 of allMp4s) {
         const baseName = path.basename(mp4.path, '.mp4');
         const absoluteInput = path.resolve(mp4.path);
@@ -163,7 +170,7 @@ export async function packageDASH(options: DashOptions): Promise<DashPackagedRes
         fragmentedPaths.push(absoluteOutput);
     }
 
-    // empaquetar y cifrar con mp4dash
+    // package and encrypt with mp4-dash.py
     const mp4dashArgs: string[] = [
         '--clearkey',
         '--encryption-cenc-scheme=cbcs',
@@ -183,8 +190,7 @@ export async function packageDASH(options: DashOptions): Promise<DashPackagedRes
         signal
     );
 
-    // limpia los fragmentos intermedios
-    try { fs.rmSync(fragDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(fragDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
     const manifestPath = path.resolve(dashDir, 'stream.mpd');
     if (!fs.existsSync(manifestPath)) {

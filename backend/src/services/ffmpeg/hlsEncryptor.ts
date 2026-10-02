@@ -61,19 +61,22 @@ function runPackager(
     });
 }
 
-/**
-  encrypted HSL (AES-128) whole-segment with Shaka Packager
-  fMP4/CMAF
- 
-  output structure:
-    hls/
-      master.m3u8
-      video_480p/playlist.m3u8 + init.mp4 + *.m4s
-      video_720p/playlist.m3u8 + init.mp4 + *.m4s
-      audio_0/playlist.m3u8 + init.mp4 + *.m4s
-      thumbnails/...
-      subtitle_0.vtt
- */
+
+function getAvcCodecString(height: number): string {
+    if (height <= 480) return 'avc1.64001e';
+    if (height <= 720) return 'avc1.64001f';
+    if (height <= 1080) return 'avc1.640028';
+    return 'avc1.640032';
+}
+
+
+function getHevcCodecString(height: number): string {
+    if (height <= 480) return 'hvc1.1.6.L93.B0';
+    if (height <= 720) return 'hvc1.1.6.L93.B0';
+    if (height <= 1080) return 'hvc1.1.6.L120.B0';
+    return 'hvc1.1.6.L150.B0';
+}
+
 export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedResult> {
     const {
         transcode,
@@ -96,8 +99,10 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
             videoId,
             kid,
             keyUri,
-            qualities: transcode.videoMp4s.length,
+            h264Qualities: transcode.videoMp4s.length,
+            hevcQualities: transcode.videoMp4sHevc.length,
             audios: transcode.audioMp4s.length,
+            hevcEnabled: transcode.hevcEnabled,
         },
         '[hls-encrypt] Starting HLS encryption with Shaka Packager'
     );
@@ -105,16 +110,33 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
     for (const v of transcode.videoMp4s) {
         fs.mkdirSync(path.join(hlsDir, `video_${v.quality}`), { recursive: true });
     }
+    for (const v of transcode.videoMp4sHevc) {
+        fs.mkdirSync(path.join(hlsDir, `video_${v.quality}_hevc`), { recursive: true });
+    }
     for (const a of transcode.audioMp4s) {
         fs.mkdirSync(path.join(hlsDir, `audio_${a.index}`), { recursive: true });
     }
 
-    // shaka arguments
+    // ---- Build Shaka args ----
     const args: string[] = [];
-    
+
+    // H.264 video inputs
     for (const video of transcode.videoMp4s) {
         const relPath = path.relative(hlsDir, video.path).replace(/\\/g, '/');
         const outDir = `video_${video.quality}`;
+        args.push(
+            `in=${relPath},` +
+            `stream=video,` +
+            `init_segment=${outDir}/init.mp4,` +
+            `segment_template=${outDir}/$Number$.m4s,` +
+            `playlist_name=${outDir}/playlist.m3u8`
+        );
+    }
+
+    // HEVC video inputs (if any)
+    for (const video of transcode.videoMp4sHevc) {
+        const relPath = path.relative(hlsDir, video.path).replace(/\\/g, '/');
+        const outDir = `video_${video.quality}_hevc`;
         args.push(
             `in=${relPath},` +
             `stream=video,` +
@@ -140,7 +162,7 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
         );
     }
 
-    // encryption args
+    // Encryption
     args.push('--enable_raw_key_encryption');
     args.push('--keys', `key_id=${kid}:key=${keyHex}`);
     args.push('--protection_scheme', 'aes128');
@@ -153,10 +175,9 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
 
     await runPackager(args, 'HLS all variants', hlsDir, signal);
 
-    // Shaka genera un master básico. Lo borramos y generamos el nuestro
-    // (que incluye subtítulos y naming más limpio).
+    // Remove Shaka's master to generate our own
     const shakaMaster = path.join(hlsDir, 'shaka_master.m3u8');
-    try { if (fs.existsSync(shakaMaster)) fs.unlinkSync(shakaMaster); } catch {}
+    try { if (fs.existsSync(shakaMaster)) fs.unlinkSync(shakaMaster); } catch { /* ignore */ }
 
     if (transcode.thumbnails.thumbnails.length > 0) {
         const srcThumbs = path.join(outputDir, videoId, 'thumbnails');
@@ -174,7 +195,6 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
             fs.copyFileSync(sub.path, dst);
         }
 
-        // playlist m3u8 -> VTT
         const duration = Math.ceil(transcode.videoInfo.duration || 0);
         const subPlaylistName = `subtitle_${sub.index}.m3u8`;
         const subPlaylistPath = path.join(hlsDir, subPlaylistName);
@@ -191,7 +211,6 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
         fs.writeFileSync(subPlaylistPath, subPlaylistContent, 'utf-8');
     }
 
-    
     const masterPath = path.join(hlsDir, 'master.m3u8');
     generateMasterPlaylist(masterPath, transcode);
 
@@ -203,17 +222,22 @@ export async function encryptHLS(options: EncryptOptions): Promise<HlsEncryptedR
     return {
         hlsDir,
         masterPlaylist: masterPath,
-        videoPlaylists: transcode.videoMp4s.map(v => ({
-            quality: v.quality,
-            playlist: path.join(hlsDir, `video_${v.quality}`, 'playlist.m3u8'),
-        })),
+        videoPlaylists: [
+            ...transcode.videoMp4s.map(v => ({
+                quality: v.quality,
+                playlist: path.join(hlsDir, `video_${v.quality}`, 'playlist.m3u8'),
+            })),
+            ...transcode.videoMp4sHevc.map(v => ({
+                quality: `${v.quality}_hevc`,
+                playlist: path.join(hlsDir, `video_${v.quality}_hevc`, 'playlist.m3u8'),
+            })),
+        ],
         audioPlaylists: transcode.audioMp4s.map(a => ({
             index: a.index,
             playlist: path.join(hlsDir, `audio_${a.index}`, 'playlist.m3u8'),
         })),
     };
 }
-
 
 function generateMasterPlaylist(outputPath: string, transcode: TranscodeResult): void {
     const lines: string[] = [
@@ -226,22 +250,19 @@ function generateMasterPlaylist(outputPath: string, transcode: TranscodeResult):
     const hasAudio = transcode.audioMp4s.length > 0;
     const hasSubs = transcode.subtitles.length > 0;
 
-    for (const audio of transcode.audioMp4s) {
-        const name = audio.language || `Audio ${audio.index + 1}`;
-        const lang = (audio.language || 'und').toLowerCase().slice(0, 3);
-        const isDefault = audio.index === 0 ? 'YES' : 'NO';
-        const audioUri = `audio_${audio.index}/playlist.m3u8`;
+    for (const a of transcode.audioMp4s) {
+        const name = a.language || `Audio ${a.index + 1}`;
+        const lang = (a.language || 'und').toLowerCase().slice(0, 3);
+        const isDefault = a.index === 0 ? 'YES' : 'NO';
+        const audioUri = `audio_${a.index}/playlist.m3u8`;
 
         lines.push(
             `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="${name}",LANGUAGE="${lang}",` +
-            `DEFAULT=${isDefault},AUTOSELECT=YES,CHANNELS="${audio.channels || 2}",URI="${audioUri}"`
+            `DEFAULT=${isDefault},AUTOSELECT=YES,CHANNELS="${a.channels || 2}",URI="${audioUri}"`
         );
     }
     if (hasAudio) lines.push('');
 
-    /* NOTA: HLS.js requiere que las pistas de subtítulos apunten a un playlist .m3u8,
-      no a un .vtt directo. Por ahora los omitimos del master y los añadimos desde el frontend como <track> del <video>.
-    */ 
     for (const sub of transcode.subtitles) {
         const lang = (sub.language || `sub${sub.index}`).toLowerCase().slice(0, 3);
         const isDefault = sub.index === 0 ? 'YES' : 'NO';
@@ -253,21 +274,29 @@ function generateMasterPlaylist(outputPath: string, transcode: TranscodeResult):
     }
     if (hasSubs) lines.push('');
 
+    const audioAttr = hasAudio ? ',AUDIO="audio"' : '';
+    const subsAttr = hasSubs ? ',SUBTITLES="subs"' : '';
+
     for (const video of transcode.videoMp4s) {
-        const bandwidth = video.bitrate;
-        const resolution = `${video.width}x${video.height}`;
-        const codecs = 'avc1.64001f,mp4a.40.2';
-
-        const audioAttr = hasAudio ? ',AUDIO="audio"' : '';
-        // const subsAttr = hasSubs ? ',SUBTITLES="subs"' : '';
-        const subsAttr = '';
-
+        const codecs = `${getAvcCodecString(video.height)},mp4a.40.2`;
         lines.push(
-            `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution},` +
+            `#EXT-X-STREAM-INF:BANDWIDTH=${video.bitrate},RESOLUTION=${video.width}x${video.height},` +
             `CODECS="${codecs}"${audioAttr}${subsAttr}`
         );
         lines.push(`video_${video.quality}/playlist.m3u8`);
         lines.push('');
+    }
+
+    if (transcode.hevcEnabled && transcode.videoMp4sHevc.length > 0) {
+        for (const video of transcode.videoMp4sHevc) {
+            const codecs = `${getHevcCodecString(video.height)},mp4a.40.2`;
+            lines.push(
+                `#EXT-X-STREAM-INF:BANDWIDTH=${video.bitrate},RESOLUTION=${video.width}x${video.height},` +
+                `CODECS="${codecs}"${audioAttr}${subsAttr}`
+            );
+            lines.push(`video_${video.quality}_hevc/playlist.m3u8`);
+            lines.push('');
+        }
     }
 
     fs.writeFileSync(outputPath, lines.join('\n'), 'utf-8');

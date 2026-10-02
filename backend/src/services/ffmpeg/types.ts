@@ -94,5 +94,6 @@ export interface ProgressInfo {
             name: string;
             status: 'pending' | 'processing' | 'completed' | 'failed';
         }[];
+        hevcEnabled?: boolean;
     };
 }

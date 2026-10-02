@@ -50,10 +50,11 @@ The player detects browser capabilities and picks the best format automatically,
 
 ### Streaming & Encoding
 - **GPU Acceleration** – Uses NVIDIA NVENC for ultra-fast encoding (20x faster than CPU)
+- **Dual Codec Support** – Generates H.264 and HEVC (hvc1) variants in parallel, letting clients pick the best codec for their device and bandwidth
 - **CMAF / fMP4** – Modern streaming format with `.m4s` segments and `init.mp4` files
 - **Adaptive Bitrate Streaming** – Up to 7 quality levels (144p to 1440p) with automatic switching
 - **Quality Selection** – Choose which qualities to encode (default: 480p, 720p, 1080p, 1440p) to save processing time
-- **Parallel Encoding** – Up to 3 qualities encoded simultaneously with `p-limit`
+- **Parallel Encoding** – Up to 3 renditions encoded simultaneously with `p-limit`
 
 ### DRM / Content Protection
 - **HLS with AES-128** – Whole-segment encryption via **Shaka Packager**, compatible with HLS.js (no EME required)
@@ -319,14 +320,14 @@ This project supports GPU acceleration using NVIDIA NVENC for **local developmen
 
 ### Codec Decision Logic
 
-| Platform | GPU | Encoder Used |
-|----------|-----|--------------|
-| Windows | NVIDIA | `h264_nvenc` |
-| Windows | No | `libx264` |
+| Platform | GPU | Encoders Used |
+|----------|-----|---------------|
+| Windows | NVIDIA (HEVC supported) | `h264_nvenc` + `hevc_nvenc` |
+| Windows | NVIDIA (no HEVC) | `h264_nvenc` |
+| Windows | No GPU | `libx264` |
 | Linux | Any | `libx264` |
 
-
-**Note:** HEVC (`hevc_nvenc`) generation was temporarily removed during the DRM refactor. The previous pipeline generated dual-codec variants (H.264 + HEVC) for every quality. See [Known Limitations & Roadmap](#known-limitations--roadmap).
+**HEVC bitrate scaling:** HEVC is encoded at 70% of the H.264 target bitrate for the same quality level, reflecting the codec's compression advantage. `-tag:v hvc1` is applied so the MP4 uses the `hvc1` sample entry (required for Apple platforms).
 
 **Important:** When running with Docker (the default deployment method), the container uses the CPU encoder (`libx264`). This is because:
 
@@ -835,11 +836,16 @@ npm test
 
 ## Known Limitations & Roadmap
 
-### HEVC support (parked during DRM refactor)
+### Currently supported
 
-An earlier version of the pipeline generated **dual-codec variants** (H.264 + HEVC) for every quality level, using `hevc_nvenc` on Windows with NVIDIA GPUs. This let clients pick HEVC for ~30% bandwidth savings when supported (Safari natively, Chrome/Edge via extension).
+- **Dual codec delivery** — H.264 + HEVC (hvc1) generated in parallel per quality on Windows with NVIDIA GPUs
+- **Bitrate scaling per codec** — HEVC is encoded at 70% of the H.264 target, delivering ~20-30% bandwidth savings at equivalent quality
+- **Apple-compatible HEVC** — FFmpeg tags the stream as `hvc1`, so Safari and dash.js on macOS/iOS can play the HEVC representation via EME
 
-During the DRM refactor (moving from a single FFmpeg pass to `transcodeToMp4` + `hlsEncryptor` + `dashPackager`), HEVC generation was temporarily removed to reduce surface area while validating the ClearKey/AES-128 flows. The legacy implementation is preserved in the git history for reference.
+
+### Notes
+
+- HEVC playback requires a browser with HEVC support. Safari plays it natively; Chrome and Edge require a GPU with HEVC hardware decode. Firefox has partial support. On unsupported clients, the player automatically falls back to H.264.
 
 
 ## License

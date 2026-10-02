@@ -3,7 +3,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import pLimit from 'p-limit';
 import { QualityProfile, ProgressInfo } from './types';
-import { QUALITY_PROFILES } from './config';
+import { QUALITY_PROFILES, HLS_CONFIG } from './config';
 import { getVideoInfo } from './videoInfo';
 import { VideoInfo } from './types';
 import { checkGPUAvailability } from './gpuDetector';
@@ -18,6 +18,7 @@ export interface VideoMp4Output {
     bitrate: number;
     width: number;
     height: number;
+    codec: 'h264' | 'hevc';
 }
 
 export interface AudioMp4Output {
@@ -35,6 +36,7 @@ export interface SubtitleOutput {
 
 export interface TranscodeResult {
     videoMp4s: VideoMp4Output[];
+    videoMp4sHevc: VideoMp4Output[];
     audioMp4s: AudioMp4Output[];
     subtitles: SubtitleOutput[];
     thumbnails: {
@@ -43,6 +45,7 @@ export interface TranscodeResult {
         vtt: string;
     };
     videoInfo: VideoInfo;
+    hevcEnabled: boolean;
 }
 
 function buildVideoMp4Args(
@@ -53,18 +56,34 @@ function buildVideoMp4Args(
     gopSize: number,
     isWindows: boolean
 ): string[] {
+    const isHevc = encoder === 'hevc_nvenc';
+    const effectiveBitrate = isHevc
+        ? `${Math.round(parseInt(quality.bitrate) * 0.7)}k`
+        : quality.bitrate;
+    const effectiveMaxrate = isHevc
+        ? `${Math.round(parseInt(quality.maxrate) * 0.7)}k`
+        : quality.maxrate;
+    const effectiveBufsize = isHevc
+        ? `${Math.round(parseInt(quality.bufsize) * 0.7)}k`
+        : quality.bufsize;
+
     const args = [
         '-i', inputPath,
         '-map', '0:v:0',
         '-c:v', encoder,
-        '-b:v', quality.bitrate,
-        '-maxrate', quality.maxrate,
-        '-bufsize', quality.bufsize,
+        '-b:v', effectiveBitrate,
+        '-maxrate', effectiveMaxrate,
+        '-bufsize', effectiveBufsize,
         '-vf', `scale=${quality.resolution}:flags=lanczos`,
         '-g', String(gopSize),
         '-an',
         '-movflags', '+faststart',
     ];
+
+    // tag the HEVC stream as hvc1 (Apple-compatible, parameter sets out-of-band)
+    if (isHevc) {
+        args.push('-tag:v', 'hvc1');
+    }
 
     if (encoder === 'hevc_nvenc') {
         args.push('-preset', 'p5', '-profile:v', 'main');
@@ -119,8 +138,6 @@ function runFFmpeg(
                     if (percent > lastPercent) {
                         lastPercent = percent;
                         onProgress(percent);
-
-                        // Log cada 10% para no saturar
                         if (percent >= lastLoggedPercent + 10 || percent === 100) {
                             lastLoggedPercent = Math.floor(percent / 10) * 10;
                             logger.info(`[${label}] ${percent}%`);
@@ -165,12 +182,18 @@ export async function transcodeToMp4(
     const gpuInfo = await checkGPUAvailability();
     const isWindows = process.platform === 'win32';
     const h264Encoder = gpuInfo.hasGPU && isWindows ? 'h264_nvenc' : 'libx264';
+    const hevcEncoder = 'hevc_nvenc';
     const gopSize = videoInfo.gopSize || 48;
+
+    // HEVC requires: config flag + HEVC support + Windows
+    const hevcEnabled: boolean =
+        HLS_CONFIG.enableHevc === true &&
+        gpuInfo.supportsHevc === true &&
+        isWindows === true;
 
     const workDir = path.join(outputDir, videoId);
     if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
 
-    // log de inicio con toda la info del video
     logger.info(
         {
             videoId,
@@ -178,7 +201,8 @@ export async function transcodeToMp4(
             resolution: `${videoInfo.width}x${videoInfo.height}`,
             fps: videoInfo.fps.toFixed(2),
             gopSize,
-            encoder: h264Encoder,
+            h264Encoder,
+            hevcEncoder: hevcEnabled ? hevcEncoder : 'disabled',
             isWindows,
             audioTracks: videoInfo.audioTracks.length,
             subtitleTracks: videoInfo.subtitleTracks.length,
@@ -196,17 +220,17 @@ export async function transcodeToMp4(
     try {
         logger.info('[transcode] Generating 40 thumbnails + sprite...');
         thumbResult = await generateThumbnails(inputPath, outputDir, videoId, 40);
-        emit('thumbnails', 10, {
+        emit('thumbnails', 8, {
             thumbnailsGenerated: thumbResult.thumbnails.length,
             totalThumbnails: 40,
             spriteGenerated: !!thumbResult.sprite,
         });
-        logger.info(`[transcode] Thumbnails generated: ${thumbResult.thumbnails.length} individual, sprite: ${thumbResult.sprite ? 'yes' : 'no'}`);
+        logger.info(`[transcode] Thumbnails generated: ${thumbResult.thumbnails.length}`);
     } catch (err) {
         logger.warn({ err }, '[transcode] Thumbnail generation failed (continuing)');
     }
 
-    emit('subtitles', 12);
+    emit('subtitles', 10);
     const subtitles: SubtitleOutput[] = [];
     if (videoInfo.subtitleTracks.length > 0) {
         logger.info(`[transcode] Extracting ${videoInfo.subtitleTracks.length} subtitle track(s)...`);
@@ -216,21 +240,15 @@ export async function transcodeToMp4(
         const vttPath = path.join(workDir, `subtitle_${i}.vtt`);
         const args = ['-i', inputPath, '-map', `0:s:${i}`, '-c:s', 'webvtt', vttPath];
         try {
-            logger.info(`[transcode] Subtitle ${i + 1}/${videoInfo.subtitleTracks.length} (${track.language || 'unknown'})...`);
             await runFFmpeg(args, `subtitle ${i}`, () => {}, 0, signal);
-            subtitles.push({
-                index: i,
-                path: vttPath,
-                language: track.language || `sub${i}`,
-            });
-            logger.info(`[transcode] Subtitle ${i} (${track.language}) extracted`);
+            subtitles.push({ index: i, path: vttPath, language: track.language || `sub${i}` });
         } catch (err) {
-            logger.warn({ err, index: i }, `[transcode] Subtitle extraction failed for index ${i}`);
+            logger.warn({ err, index: i }, `[transcode] Subtitle extraction failed for ${i}`);
         }
     }
-    emit('subtitles', 15, { subtitlesExtracted: subtitles.length });
+    emit('subtitles', 12, { subtitlesExtracted: subtitles.length });
 
-    emit('audio', 17);
+    emit('audio', 14);
     const audioMp4s: AudioMp4Output[] = [];
     if (videoInfo.audioTracks.length > 0) {
         logger.info(`[transcode] Extracting ${videoInfo.audioTracks.length} audio track(s)...`);
@@ -246,7 +264,7 @@ export async function transcodeToMp4(
             '-movflags', '+faststart',
             audioPath,
         ];
-        logger.info(`[transcode] Audio ${i + 1}/${videoInfo.audioTracks.length} (${track.language || 'unknown'}, ${track.channels || 2}ch)...`);
+        logger.info(`[transcode] Audio ${i + 1}/${videoInfo.audioTracks.length} (${track.language || 'unknown'})...`);
         await runFFmpeg(args, `audio ${i}`, () => {}, 0, signal);
         audioMp4s.push({
             index: i,
@@ -254,40 +272,49 @@ export async function transcodeToMp4(
             language: track.language || `track${i}`,
             channels: track.channels || 2,
         });
-        logger.info(`[transcode] Audio ${i} (${track.language}) extracted`);
     }
-    emit('audio', 20, { audioTracksExtracted: audioMp4s.length });
+    emit('audio', 16, { audioTracksExtracted: audioMp4s.length });
 
     const videoMp4s: VideoMp4Output[] = [];
-    const qualityProgress = new Array(qualities.length).fill(0);
+    const videoMp4sHevc: VideoMp4Output[] = [];
+    const totalTasks = qualities.length * (hevcEnabled ? 2 : 1);
+    const taskProgress = new Array(totalTasks).fill(0);
 
     const updateVideoProgress = () => {
-        const total = qualityProgress.reduce((a, b) => a + b, 0) / qualities.length;
-        emit('qualities', 20 + (total / 100) * 60, {
+        const total = taskProgress.reduce((a, b) => a + b, 0) / totalTasks;
+        emit('qualities', 16 + (total / 100) * 66, {
             totalQualities: qualities.length,
-            completedQualities: qualityProgress.filter(p => p >= 100).length,
+            completedQualities: taskProgress.filter(p => p >= 100).length / (hevcEnabled ? 2 : 1),
+            hevcEnabled,
         });
     };
 
-    logger.info(`[transcode] Processing ${qualities.length} video qualities in parallel (limit: ${CONCURRENCY_LIMIT})...`);
+    logger.info(
+        `[transcode] Processing ${qualities.length} qualities in parallel ` +
+        `(${hevcEnabled ? 'H.264 + HEVC' : 'H.264 only'}, limit: ${CONCURRENCY_LIMIT})...`
+    );
 
     const limit = pLimit(CONCURRENCY_LIMIT);
-    const tasks = qualities.map((quality, idx) =>
-        limit(async () => {
+    const tasks: Promise<void>[] = [];
+
+    qualities.forEach((quality, qIdx) => {
+        // H.264 task
+        tasks.push(limit(async () => {
             const outPath = path.join(workDir, `video_${quality.name}.mp4`);
             const args = buildVideoMp4Args(inputPath, outPath, quality, h264Encoder, gopSize, isWindows);
+            const taskIdx = qIdx * (hevcEnabled ? 2 : 1);
 
-            logger.info(`[transcode] [${h264Encoder}] [${idx + 1}/${qualities.length}] Processing ${quality.name}...`);
+            logger.info(`[transcode] [h264] [${qIdx + 1}/${qualities.length}] Processing ${quality.name}...`);
 
             await runFFmpeg(
                 args,
-                `video ${quality.name}`,
-                (p) => { qualityProgress[idx] = p; updateVideoProgress(); },
+                `h264 ${quality.name}`,
+                (p) => { taskProgress[taskIdx] = p; updateVideoProgress(); },
                 videoInfo.duration,
                 signal
             );
 
-            qualityProgress[idx] = 100;
+            taskProgress[taskIdx] = 100;
             updateVideoProgress();
 
             videoMp4s.push({
@@ -296,38 +323,72 @@ export async function transcodeToMp4(
                 bitrate: parseInt(quality.bitrate) * 1000,
                 width: quality.width,
                 height: quality.height,
+                codec: 'h264',
             });
+        }));
 
-            logger.info(`[transcode] [${quality.name}] Encoding complete`);
-        })
-    );
+        // HEVC task
+        if (hevcEnabled) {
+            tasks.push(limit(async () => {
+                const outPath = path.join(workDir, `video_${quality.name}_hevc.mp4`);
+                const args = buildVideoMp4Args(inputPath, outPath, quality, hevcEncoder, gopSize, isWindows);
+                const taskIdx = qIdx * 2 + 1;
+
+                logger.info(`[transcode] [hevc] [${qIdx + 1}/${qualities.length}] Processing ${quality.name}...`);
+
+                await runFFmpeg(
+                    args,
+                    `hevc ${quality.name}`,
+                    (p) => { taskProgress[taskIdx] = p; updateVideoProgress(); },
+                    videoInfo.duration,
+                    signal
+                );
+
+                taskProgress[taskIdx] = 100;
+                updateVideoProgress();
+
+                videoMp4sHevc.push({
+                    quality: quality.name,
+                    path: outPath,
+                    bitrate: Math.round(parseInt(quality.bitrate) * 0.7) * 1000,
+                    width: quality.width,
+                    height: quality.height,
+                    codec: 'hevc',
+                });
+            }));
+        }
+    });
 
     await Promise.all(tasks);
-    emit('qualities', 80);
+    emit('qualities', 82);
 
     videoMp4s.sort((a, b) => a.height - b.height);
+    videoMp4sHevc.sort((a, b) => a.height - b.height);
 
     emit('done', 85, {
         completedQualities: qualities.length,
         totalQualities: qualities.length,
+        hevcEnabled,
     });
 
     logger.info(
         {
             videoId,
-            videoMp4s: videoMp4s.length,
-            audioMp4s: audioMp4s.length,
+            h264: videoMp4s.length,
+            hevc: videoMp4sHevc.length,
+            audio: audioMp4s.length,
             subtitles: subtitles.length,
-            thumbnails: thumbResult.thumbnails.length,
         },
         '[transcode] Transcoding complete'
     );
 
     return {
         videoMp4s,
+        videoMp4sHevc,
         audioMp4s,
         subtitles,
         thumbnails: thumbResult,
         videoInfo,
+        hevcEnabled,
     };
 }
